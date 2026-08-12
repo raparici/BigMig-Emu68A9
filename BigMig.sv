@@ -1,0 +1,1504 @@
+/********************************************/
+/* minimig.sv                               */
+/* MiSTer glue logic                        */
+/* 2017-2020 Alexey Melnikov                */
+/********************************************/
+
+module emu
+(
+	`include "sys/emu_ports.vh"
+);
+
+assign ADC_BUS  = 'Z;
+assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
+assign BUTTONS = 0;
+// D18: VGA_DISABLE is no longer a constant — it is driven by the RTG analog-blank latch
+// in the video section (search "D18").  Kept here as a signpost because this is where
+// every other unused emu output is tied off.
+assign HDMI_FREEZE = 0;
+assign HDMI_BLACKOUT = 0;
+assign HDMI_BOB_DEINT = 0;
+
+`include "build_id.v" 
+localparam CONF_STR = {
+	// ★ BigMig (2026-07-31).  The core identity, and it carries more weight than a label:
+	// MiSTer derives the CONFIG FILENAMES from it, so this is what gives BigMig its own
+	// bigmig*.cfg slots and lets it sit alongside stock Minimig on the same SD card.
+	// MiSTer Main must know the name too -- is_minimig() gates 31 call sites on it (see
+	// user_io.cpp) -- and the games/Amiga folder mapping is extended there on purpose, so both
+	// cores share ONE library of ADFs, HDFs and Kickstart ROMs.
+	"BigMig;UART115200:230400,MIDI;",
+	"J,Red(Fire),Blue,Yellow,Green,RT,LT,Pause;",
+	"jn,A,B,X,Y,R,L,Start;",
+	"jp,B,A,X,Y,R,L,Start;",
+	"-;",
+	"I,",
+	"MT32-pi: SoundFont #0,",
+	"MT32-pi: SoundFont #1,",
+	"MT32-pi: SoundFont #2,",
+	"MT32-pi: SoundFont #3,",
+	"MT32-pi: SoundFont #4,",
+	"MT32-pi: SoundFont #5,",
+	"MT32-pi: SoundFont #6,",
+	"MT32-pi: SoundFont #7,",
+	"MT32-pi: MT-32 v1,",
+	"MT32-pi: MT-32 v2,",
+	"MT32-pi: CM-32L,",
+	"MT32-pi: Unknown mode;",
+	"V,v",`BUILD_DATE
+};
+
+wire [15:0] JOY0;
+wire [15:0] JOY1;
+wire [15:0] JOY2;
+wire [15:0] JOY3;
+wire [15:0] JOYA0;
+wire [15:0] JOYA1;
+wire  [7:0] kbd_mouse_data;
+wire        kbd_mouse_level;
+wire  [1:0] kbd_mouse_type;
+wire  [2:0] mouse_buttons;
+wire [64:0] RTC;
+
+wire        ce_pix;
+wire  [1:0] buttons;
+wire [63:0] status;
+wire        forced_scandoubler;
+
+wire        io_strobe;
+wire        io_wait;
+wire        io_fpga;
+wire        io_uio;
+wire [15:0] io_din;
+wire [15:0] fpga_dout;
+
+wire [21:0] gamma_bus;
+
+wire  [7:0] uart_mode;
+
+hps_io #(.CONF_STR(CONF_STR), .CONF_STR_BRAM(0)) hps_io
+(
+	.clk_sys(clk_sys),
+	.HPS_BUS({HPS_BUS[45:42],ce_pix,HPS_BUS[40:0]}),
+
+	.status(status),
+	.status_menumask({mt32_cfg,mt32_available}),
+	.info_req(mt32_info_req),
+	.info(mt32_info_disp),
+
+	.joystick_0(JOY0),
+	.joystick_1(JOY1),
+	.joystick_2(JOY2),
+	.joystick_3(JOY3),
+	.joystick_l_analog_0(JOYA0),
+	.joystick_l_analog_1(JOYA1),
+	
+	.ioctl_wait(io_wait),
+
+	.buttons(buttons),
+	.forced_scandoubler(forced_scandoubler),
+
+	.uart_mode(uart_mode),
+
+	.RTC(RTC),
+	.gamma_bus(gamma_bus),
+
+	.EXT_BUS(EXT_BUS)
+);
+
+wire [15:0] ide_din;
+wire [15:0] ide_dout;
+wire  [4:0] ide_addr;
+wire        ide_rd;
+wire        ide_wr;
+wire  [5:0] ide_req;
+
+wire [35:0] EXT_BUS;
+hps_ext hps_ext(.*, .ide_req(ide_fast ? ide_f_req : ide_c_req),  .ide_din(ide_fast ? ide_f_readdata : ide_c_readdata));
+
+assign LED_POWER[1] = 1;
+assign LED_DISK     = {1'b0, ide_fast ? ide_f_led : ide_c_led};
+
+// "The RTG framebuffer is the picture" -- said once here, routed per output by sys_top.
+// While RTG owns the display the picture exists only in the scaler's framebuffer path,
+// and two consumers need to know: the analog output, which must go quiet (above), and
+// the scaler itself.
+assign VGA_SCALER   = FB_EN;
+
+wire clk_114;
+wire clk_sys;
+wire locked;
+
+pll pll
+(
+	.refclk(CLK_50M),
+	.outclk_0(clk_114),
+	.outclk_1(clk_sys),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll),
+	.locked(locked)
+);
+
+wire [63:0] reconfig_to_pll;
+wire [63:0] reconfig_from_pll;
+wire        cfg_waitrequest;
+reg         cfg_write;
+reg   [5:0] cfg_address;
+reg  [31:0] cfg_data;
+
+pll_cfg pll_cfg
+(
+	.mgmt_clk(CLK_50M),
+	.mgmt_reset(0),
+	.mgmt_waitrequest(cfg_waitrequest),
+	.mgmt_read(0),
+	.mgmt_readdata(),
+	.mgmt_write(cfg_write),
+	.mgmt_address(cfg_address),
+	.mgmt_writedata(cfg_data),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll)
+);
+
+always @(posedge CLK_50M) begin
+	reg ntscd = 0, ntscd2 = 0;
+	reg [2:0] state = 0;
+	reg ntsc_r;
+
+	ntscd <= ntsc;
+	ntscd2 <= ntscd;
+
+	cfg_write <= 0;
+	if(ntscd2 == ntscd && ntscd2 != ntsc_r) begin
+		state <= 1;
+		ntsc_r <= ntscd2;
+	end
+
+	if(!cfg_waitrequest) begin
+		if(state) state<=state+1'd1;
+		case(state)
+			1: begin
+					cfg_address <= 0;
+					cfg_data <= 0;
+					cfg_write <= 1;
+				end
+			3: begin
+					cfg_address <= 7;
+					cfg_data <= ntsc_r ? 702807747 : 343817200;
+					cfg_write <= 1;
+				end
+			5: begin
+					cfg_address <= 2;
+					cfg_data <= 0;
+					cfg_write <= 1;
+				end
+		endcase
+	end
+end
+
+wire reset = ~locked | buttons[1] | RESET;
+
+reg reset_d;
+always @(posedge clk_sys, posedge reset) begin
+	reg [7:0] reset_s;
+	reg rs;
+	
+	if(reset) reset_s <= '1;
+	else begin
+		reset_s <= reset_s << 1;
+		rs <= reset_s[7];
+		reset_d <= rs;
+	end
+end
+
+//// amiga clocks ////
+wire       clk7_en;
+wire       clk7n_en;
+wire       c1;
+wire       c3;
+wire       cck;
+wire [9:0] eclk;
+
+amiga_clk amiga_clk
+(
+	.clk_28   ( clk_sys    ), // input  clock c1 ( 28.687500MHz)
+	.clk7_en  ( clk7_en    ), // output clock 7 enable (on 28MHz clock domain)
+	.clk7n_en ( clk7n_en   ), // 7MHz negedge output clock enable (on 28MHz clock domain)
+	.c1       ( c1         ), // clk28m clock domain signal synchronous with clk signal
+	.c3       ( c3         ), // clk28m clock domain signal synchronous with clk signal delayed by 90 degrees
+	.cck      ( cck        ), // colour clock output (3.54 MHz)
+	.eclk     ( eclk       ), // 0.709379 MHz clock enable output (clk domain pulse)
+	.reset_n  ( ~reset     )
+);
+
+
+wire cpu_type = cpucfg[1];
+reg  cpu_ph1;
+reg  cpu_ph2;
+reg  ram_cs;
+reg  cyc;
+
+always @(posedge clk_114) begin
+	reg [3:0] div;
+	reg       c1d;
+
+	div <= div + 1'd1;
+	 
+	c1d <= c1;
+	if (~c1d & c1) div <= 3;
+	
+	if (~cpu_rst) begin
+		cyc <= 0;
+		cpu_ph1 <= 0;
+		cpu_ph2 <= 0;
+	end
+	else begin
+		cyc <= !div[1:0];
+		if (div[1] & ~div[0]) begin
+			cpu_ph1 <= 0;
+			cpu_ph2 <= 0;
+			case (div[3:2])
+				0: cpu_ph2 <= 1;
+				2: cpu_ph1 <= 1;
+			endcase
+		end
+	end
+
+	ram_cs <= ~(ram_ready & cyc & cpu_type) & ram_sel;
+end
+
+wire  [1:0] cpu_state;
+wire        cpu_nrst_out;
+wire  [3:0] cpu_cacr;
+wire [31:0] cpu_nmi_addr;
+wire        cpu_rst;
+
+wire  [2:0] chip_ipl;
+wire        chip_dtack;
+wire        chip_as;
+wire        chip_uds;
+wire        chip_lds;
+wire        chip_rw;
+wire [15:0] chip_dout;
+wire [15:0] chip_din;
+wire [23:1] chip_addr;
+
+wire [28:1] ram_addr;
+wire        ram_sel;
+wire        ram_lds;
+wire        ram_uds;
+wire [15:0] ram_din;
+// ram2 is gone (see the note at its old site): ram1 is the only CPU-port RAM.
+wire [15:0] ram_dout  = ram_dout1;
+wire        ram_ready = ram_ready1;
+wire        zram_sel  = |ram_addr[28:26];
+wire        ramshared;
+
+wire [7:0] toccata_base;
+wire toccata_ena;
+
+//========================================================================//
+// Emu68-A9 hybrid seam integration                                                           //
+//   Enable by defining HYBRID_EMU project-wide (BigMig.qsf:              //
+//     set_global_assignment -name VERILOG_MACRO "HYBRID_EMU=1").          //
+//   When enabled the AXI seam bridge is the SINGLE chip-bus master and    //
+//   the in-fabric fx68k/TG68K are parked (the Emu68-A9 ARMv7 JIT is the   //
+//   m68k). When NOT defined the core is byte-for-byte the classic core.   //
+//========================================================================//
+
+// cpu_wrapper's chip-bus outputs are rerouted to cw_chip_* so we can pick
+// the bus master with a mux (no multiple drivers on chip_*).
+wire [23:1] cw_chip_addr;
+wire [15:0] cw_chip_din;
+wire        cw_chip_as, cw_chip_uds, cw_chip_lds, cw_chip_rw;
+
+`ifdef HYBRID_EMU
+	//--------------------------------------------------------------------//
+	// There is no runtime CPU select: the bridge IS the chip-bus master, hardwired.    //
+	// The OSD CPU type bits stay 00 so every cpucfg[1] consumer sees plain-68000        //
+	// semantics -- which is why Fast-IDE is derived from its own OSD bit instead.       //
+	//--------------------------------------------------------------------//
+	wire soft_cpu_reset = 1'b0;
+
+	// hybrid bridge outputs
+	wire [23:1] hb_chip_addr;
+	wire [15:0] hb_chip_din;
+	wire        hb_chip_as, hb_chip_uds, hb_chip_lds, hb_chip_rw;
+	wire        hb_fc_sel;
+	wire [24:1] hb_cp_addr;
+	wire [15:0] hb_cp_wdata;
+	wire  [1:0] hb_cp_state;
+	wire        hb_cp_cs, hb_cp_u, hb_cp_l;
+
+	// ---- chip-bus master: DIRECT, no mux ----
+	// ⛔ The three lines that followed described a MUX ("Emu68 selected -> the
+	// hybrid bridge owns the chip bus; otherwise the soft cpu_wrapper does and
+	// the bridge outputs are DESELECTED here").  That mux was deleted on
+	// 2026-07-07 and the paragraph below has said so ever since -- but the
+	// stale description came FIRST, so the block read as a mux with a footnote.
+	// chip_dout/chip_dtack/chip_ipl deliberately fan out to BOTH masters
+	// unmuxed (single driver each, from minimig): the deselected master is
+	// inert -- the bridge FSM only launches on hyb_request (A9 pokes), the
+	// parked soft CPU ignores its inputs. Do NOT add second drivers there.
+	// DIRECT INTEGRATION (owner directive 2026-07-07): the Emu68-A9 bridge IS the
+	// chip-bus master — no mux, no runtime CPU select, ZERO logic between the
+	// bridge outputs and the chipset. cw_chip_* dangle -> the inert cpu_wrapper
+	// is fully swept. The P2.6 runtime-select era ends here.
+	assign chip_addr = hb_chip_addr;
+	assign chip_din  = hb_chip_din;
+	assign chip_as   = hb_chip_as;
+	assign chip_uds  = hb_chip_uds;
+	assign chip_lds  = hb_chip_lds;
+	assign chip_rw   = hb_chip_rw;
+
+	// word-transaction wires (seam_engine <-> bridge)
+	wire [22:0] hyb_address;
+	wire        hyb_read, hyb_write, hyb_longword, hyb_request, hyb_complete;
+	wire        hyb_cerr;   // bridge sticky DTACK-timeout -> REG_STATUS bit1
+	wire [15:0] hyb_writedata, hyb_readdata;
+	// LW-FUSE (2026-08-11): the bridge serves a Via-B chip-RAM longword READ in one
+	// transaction and returns the word at A alongside the completion.  See the LW-FUSE note
+	// in minimig_m68k_hybrid_bridge.v for the measurement that motivates it.
+	wire [15:0] hyb_readdata_hi;
+	wire        hyb_lw_done;
+	wire  [1:0] hyb_byteenable;
+
+	// seam control-plane
+	wire [31:0] seam_vbr;
+	wire  [3:0] seam_cacr;
+	wire  [1:0] seam_ovl;      // raw OVL register (bit0 unconnected -- D12 note
+	                           // in axi_seam_slave.v; bit1 raw strobe, superseded
+	                           // by the stretched outputs below)
+	wire        seam_soft_rst; // S-S3: stretched OVL[1] reset, AXI domain
+	wire        seam_chip_rst; // D12: same, synced to clk_sys -> chipset reset
+
+	//--------------------------------------------------------------------//
+	// h2f AXI4-Lite slave bus (raw-primitive path, NO Qsys).             //
+	//   The h2f_* signals now arrive as REAL `emu` module PORTS via        //
+	//   sys/emu_ports.vh (`ifdef HYBRID_EMU). Datapath, built in           //
+	//   sys_top.v: HPS h2f AXI-3 master (sys/sysmem.sv) -> h2f_axi3_to_lite//
+	//   adapter -> this AXI4-Lite slave. S_AXI_ACLK is the h2f clock        //
+	//   (clk_100m, arriving on port h2f_aclk); sync_clk stays clk_sys       //
+	//   (28 MHz). The old inert stub ties are GONE.                         //
+	//                                                                      //
+	//   [TODO-HW: verify in Quartus 17.0.2] BEWARE: the HPS h2f bridge is   //
+	//   gated at reset -- software must un-gate it (Reset-Mgr brgmodrst /   //
+	//   fpga-bridge) or every 0xC0000000 access hangs                       //
+	//   The HPS h2f bridge must be un-gated in software or 0xC0000000 hangs. //
+	//--------------------------------------------------------------------//
+	// h2f_* are now REAL module ports of `emu` (sys/emu_ports.vh, `ifdef
+	// HYBRID_EMU); NO stub wires here. They resolve to the port list and are
+	// driven from sys_top.v (sysmem.sv h2f master -> h2f_axi3_to_lite adapter).
+
+	// P3.4b native-longword switch (the ONE RTL flip point).  0 = single-word 2x16 path;
+	// 1 = one longword txn runs two back-to-back chip cycles, halving the seam round-trips
+	// + CDC crossings per 32-bit access.  ENABLED for the A4000-class 32-bit CPU data path
+	// (the A9 backend MUST be built with -DSEAM_LONGWORD to match; the seam_engine longword
+	// FSM states WAIT_COMPLETE1/2 + the bridge longword path already implement it).
+	// [BRING-UP FALLBACK: if the very first single-word smoke test is preferred, flip this
+	// back to 0 and drop -DSEAM_LONGWORD — the whole longword path is gated by this one bit.]
+	// FL-9 DECISION (@ruben, 2026-07-05 night): longword STAYS ENABLED — the TestROM ran
+	// on silicon with it, so it is board-exercised, and a .L access actually makes FEWER
+	// CDC crossings than two single-word round-trips (it was never implicated in the
+	// wedges; the lethal bit was SEAM_BLOCKING_READ, now 1 (BOUNDED, 20us cap + srst release) in axi_seam_slave.v). Owner
+	// accepts the attribution tradeoff to keep the chip .L bandwidth. Firmware pairs
+	// with -DSEAM_LONGWORD (lock-step).
+	localparam SEAM_LONGWORD_EN = 1;
+	// B-16 request-FIFO depth, as log2.  0 => depth 1 => one request outstanding, i.e. the
+	// pre-FIFO behaviour, so the proven path stays the default and the queue is opt-in here.
+	// 2 => depth 4: enough to absorb the bursts the JIT emits back to back (a longword pair,
+	// a MOVEM) without spending logic on a queue the 7 MHz chip domain could never drain.
+	// MEASURED AND SET TO 0 ON PURPOSE (step 4).  Depth 4 costs chip-RAM READ latency
+	// (695 -> 907 cycles) and buys nothing: SysInfo 68.86 -> 69.57 MIPS is noise, while
+	// Chip Speed vs A600 drops 3.72 -> 3.37.  The bottleneck is the 7 MHz chip domain,
+	// not the CPU's ability to ISSUE, so a deeper queue cannot help and its extra stage
+	// can only hurt.  The engine keeps the queue machinery -- the overflow counter earned
+	// its logic on the first run by catching a dropped-chip-cycle bug.
+	localparam SEAM_REQFIFO_LOG2 = 0;
+
+// (NO_SOFT_CPUS was declared HERE until 2026-08-12 -- inside `ifdef HYBRID_EMU`,
+//  while its only read sits outside it.  Moved down to just above cpu_wrapper;
+//  see the note there.  Nothing about the hybrid build changed: still 1.)
+
+// VIA-B (#14, 2026-07-11): route the seam's CHIP-RAM accesses through sdram_ctrl's
+// CPU port (buffered/arbitrated/retrying — the turbochip path) instead of raw
+// chip-bus cycles whose DTACK is arbitration, not commit. Fixes the silent
+// write-loss AND the read-under-contention corruption in one mechanism
+// (chipwrite-bench Phase B is the proof). THE one flip point for an A/B bisect
+// rbf: 0 = pre-Via-B behavior (chip-bus only, chip_write_retry band-aid active).
+localparam VIAB_EN = 1'b1;
+
+// VIA-B perf pair (eureka15, 2026-07-11 late): bench Phase C proves both.
+//   VIAB_POSTED: chip-RAM writes complete on buffer ACCEPT (the drain still
+//   commits+backpressures inside sdram_ctrl; a following chip-bus register
+//   write is >=1 seam round-trip away, so ordering holds in practice).
+//   VIAB_CACHED: run the CPU port CACHED (cache_inhibit=0; cpu_cache_new's
+//   snoop port already folds EVERY chip-port write — Agnus DMA included — into
+//   matching lines, so coherency is by construction). 4-word line fills give
+//   sequential chip reads ~4x fewer SDRAM slots + re-read hits.
+// Flip either to 0 for the eureka14 (conservative) behavior.
+localparam VIAB_POSTED = 1'b1;
+localparam VIAB_CACHED = 1'b1;
+
+	axi_seam_slave #(.LONGWORD_EN(SEAM_LONGWORD_EN), .REQFIFO_LOG2(SEAM_REQFIFO_LOG2)) u_axi_seam_slave
+	(
+		.S_AXI_ACLK    (h2f_aclk    ),
+		.S_AXI_ARESETN (h2f_arstn   ),
+		.S_AXI_AWADDR  (h2f_awaddr  ),
+		.S_AXI_AWPROT  (h2f_awprot  ),
+		.S_AXI_AWVALID (h2f_awvalid ),
+		.S_AXI_AWREADY (h2f_awready ),
+		.S_AXI_WDATA   (h2f_wdata   ),
+		.S_AXI_WSTRB   (h2f_wstrb   ),
+		.S_AXI_WVALID  (h2f_wvalid  ),
+		.S_AXI_WREADY  (h2f_wready  ),
+		.S_AXI_BRESP   (h2f_bresp   ),
+		.S_AXI_BVALID  (h2f_bvalid  ),
+		.S_AXI_BREADY  (h2f_bready  ),
+		.S_AXI_ARADDR  (h2f_araddr  ),
+		.S_AXI_ARPROT  (h2f_arprot  ),
+		.S_AXI_ARVALID (h2f_arvalid ),
+		.S_AXI_ARREADY (h2f_arready ),
+		.S_AXI_RDATA   (h2f_rdata   ),
+		.S_AXI_RRESP   (h2f_rresp   ),
+		.S_AXI_RVALID  (h2f_rvalid  ),
+		.S_AXI_RREADY  (h2f_rready  ),
+
+		.sync_clk      (clk_sys        ),
+		.hyb_address   (hyb_address    ),
+		.hyb_read      (hyb_read       ),
+		.hyb_write     (hyb_write      ),
+		.hyb_writedata (hyb_writedata  ),
+		.hyb_byteenable(hyb_byteenable ),
+		.hyb_longword  (hyb_longword   ),
+		.hyb_request   (hyb_request    ),
+		.hyb_readdata  (hyb_readdata   ),
+		.hyb_complete  (hyb_complete   ),
+		.hyb_readdata_hi(hyb_readdata_hi),
+		.hyb_lw_done   (hyb_lw_done    ),
+		.hyb_cerr      (hyb_cerr       ),  // sticky DTACK-timeout -> REG_STATUS bit1
+
+		.ipl_n         (chip_ipl       ),  // Paula IPL (active-low), from minimig
+		// D10: REG_IPL bit3 must show the REAL m68k/minimig reset (cpu_rst =
+		// minimig._cpu_reset, low while the chipset resets the CPU and the
+		// cpu_ph1/cpu_ph2 phases are frozen), NOT the parked soft-CPU's
+		// nResetOut (constant '1' in reset -- bit3 lied while the seam stalled).
+		.cpu_reset_n   (cpu_rst        ),  // m68k reset_n readback (active-low)
+
+		.vbr           (seam_vbr       ),
+		.cacr          (seam_cacr      ),
+		.ovl           (seam_ovl       ),
+		.soft_rst      (seam_soft_rst  ),  // S-S3 stretched OVL[1] (AXI domain)
+		.chip_rst_req  (seam_chip_rst  )   // chip-domain chipset-reset request
+	);
+
+
+	minimig_m68k_hybrid_bridge u_hybrid_bridge
+	(
+		.clk           (clk_sys        ),
+		.reset_n       (~reset_d       ),
+		.ph1           (cpu_ph1        ),
+		.ph2           (cpu_ph2        ),
+		.soft_reset    (seam_soft_rst  ),  // S-S3: STRETCHED OVL[1] -> fabric FSM reset
+
+		.ext_address   (hyb_address    ),
+		.ext_read      (hyb_read       ),
+		.ext_write     (hyb_write      ),
+		.ext_writedata (hyb_writedata  ),
+		.ext_byteenable(hyb_byteenable ),
+		.ext_request   (hyb_request    ),
+		.ext_longword  (hyb_longword   ),
+		.ext_readdata  (hyb_readdata   ),
+		.ext_complete  (hyb_complete   ),
+		.ext_readdata_hi(hyb_readdata_hi),
+		.ext_lw_done   (hyb_lw_done    ),
+		.cerr          (hyb_cerr       ),
+
+		.chip_addr     (hb_chip_addr   ),
+		.chip_dout     (chip_dout      ),
+		.chip_din      (hb_chip_din    ),
+		.chip_as       (hb_chip_as     ),
+		.chip_uds      (hb_chip_uds    ),
+		.chip_lds      (hb_chip_lds    ),
+		.chip_rw       (hb_chip_rw     ),
+		.chip_dtack    (chip_dtack     ),
+
+		// VIA-B (#14): chip RAM via ram1's CPU port (registers/CIA/kick/slow
+		// keep the chip bus above). Decode inputs mirror gary: overlay state
+		// + configured chip size (block mirroring).
+		.viab_en       (VIAB_EN        ),
+		.viab_posted   (VIAB_POSTED    ),
+		.ovl           (minimig_ovl    ),
+		.chip_memcfg   (memcfg[1:0]    ),
+		.cp_addr       (hb_cp_addr     ),
+		.cp_cs         (hb_cp_cs       ),
+		.cp_state      (hb_cp_state    ),
+		.cp_u          (hb_cp_u        ),
+		.cp_l          (hb_cp_l        ),
+		.cp_wdata      (hb_cp_wdata    ),
+		.cp_rdata      (ram_dout1      ),
+		.cp_ramready   (ram_ready1     ),
+		.cp_write_busy (ram1_write_busy),
+		// D17: Akiko/RTG at $B8xxxx.  Without this nothing ever selects fastchip in
+		// this core (there is no soft CPU, so cpu_wrapper's fastchip_sel is dead), so the
+		// RTG card is invisible to the guest.  See the port comments in the bridge.
+		// D19: + the CPU-side Gayle at $DAxxxx / $DE1xxx, gated by the SAME enable
+		// fastchip decodes with, and with the chip bus parked for those two windows.
+		.fc_ide_ena    (fc_ide_ena     ),
+		.fc_sel        (hb_fc_sel      ),
+		.fc_selack     (fastchip_selack),
+		.fc_ready      (fastchip_ready ),
+		.fc_dout       (fastchip_dout  )
+	);
+	//--------------------------------------------------------------------//
+	// In hybrid mode `_cpu_reset_in` is driven ONLY by the seam, never by the parked   //
+	// wrapper's reset-out: the seam's stretched OVL[1] pulse asserts the internal       //
+	// chipset reset and re-arms the Kickstart overlay -- the role the soft CPU's RESET  //
+	// instruction used to play.                                                         //
+	//--------------------------------------------------------------------//
+	wire cpu_nrst_in = ~seam_chip_rst;
+`else  // !HYBRID_EMU  -- classic core: cpu_wrapper drives the chip bus
+	wire soft_cpu_reset = cpu_rst;
+	assign chip_addr = cw_chip_addr;
+	assign chip_din  = cw_chip_din;
+	assign chip_as   = cw_chip_as;
+	assign chip_uds  = cw_chip_uds;
+	assign chip_lds  = cw_chip_lds;
+	assign chip_rw   = cw_chip_rw;
+
+	// classic core: the soft-CPU's RESET-instruction output, as always
+	wire cpu_nrst_in = cpu_nrst_out;
+`endif
+
+// FL-5 (2026-07-07, owner): the fabric carries NO soft CPU.  Emu68-A9 is the only
+// chip-bus master, which freed ~5k ALMs + 6 DSPs of margin for the marginal launch
+// paths.  What remains of cpu_wrapper is its autoconfig and decode logic; the CPU
+// itself is the seam.
+//
+// This was a `NO_SOFT_CPUS` parameter until 2026-08-12.  It is gone, and so is the
+// classic build it switched -- see the note in cpu_wrapper.v and BigMig.qsf.  The
+// short version: the parameter was declared inside `ifdef HYBRID_EMU` while its only
+// read was outside it, so the "classic core" escape hatch could not elaborate; and
+// once that was fixed, elaboration failed anyway because fx68k and TG68KdotC_Kernel
+// were never in this project's Quartus file list.  There was no classic build to
+// preserve, only the appearance of one.
+cpu_wrapper cpu_wrapper
+(
+	.reset        (soft_cpu_reset  ),
+	.reset_out    (cpu_nrst_out    ),
+
+	.clk          (clk_sys         ),
+	.ph1          (cpu_ph1         ),
+	.ph2          (cpu_ph2         ),
+
+	.chip_addr    (cw_chip_addr    ),
+	.chip_dout    (chip_dout       ),
+	.chip_din     (cw_chip_din     ),
+	.chip_as      (cw_chip_as      ),
+	.chip_uds     (cw_chip_uds     ),
+	.chip_lds     (cw_chip_lds     ),
+	.chip_rw      (cw_chip_rw      ),
+	.chip_dtack   (chip_dtack      ),
+	.chip_ipl     (chip_ipl        ),
+
+	.fastchip_dout   (fastchip_dout   ),
+	.fastchip_sel    (fastchip_sel    ),
+	.fastchip_lds    (fastchip_lds    ),
+	.fastchip_uds    (fastchip_uds    ),
+	.fastchip_rnw    (fastchip_rnw    ),
+	.fastchip_selack (fastchip_selack ),
+	.fastchip_ready  (fastchip_ready  ),
+	.fastchip_lw     (fastchip_lw     ),
+
+	.cpucfg       (cpucfg          ),
+	.cachecfg     (cachecfg        ),
+	.fastramcfg   (memcfg[6:4]     ),
+	.bootrom      (bootrom         ),
+
+	.toccata_ena  (toccata_ena     ),
+	.toccata_base (toccata_base    ),
+	
+	.ramsel       (ram_sel         ),
+	.ramaddr      (ram_addr        ),
+	.ramlds       (ram_lds         ),
+	.ramuds       (ram_uds         ),
+	.ramdout      (ram_dout        ),
+	.ramdin       (ram_din         ),
+	.ramready     (ram_ready       ),
+	.ramshared    (ramshared       ),
+
+	//custom CPU signals
+	.cpustate     (cpu_state       ),
+	.cacr         (cpu_cacr        ),
+	.nmi_addr     (cpu_nmi_addr    )
+);
+
+wire [15:0] ram_dout1;
+wire        ram_ready1;
+wire        ram1_write_busy;   // VIA-B: write buffer undrained (bridge completes on drain)
+
+//------------------------------------------------------------------------//
+// VIA-B (#14): ram1's CPU-port master selection.                          //
+//   HYBRID: the seam bridge owns the port (chip-RAM accesses; the parked   //
+//   cpu_wrapper's ram_sel is inert-by-construction: no soft CPU). The     //
+//   ⚠ The port runs CACHED, not uncached.  This said "UNCACHED               //
+//   (cache_inhibit=1) ... coherent caching is a later, measured             //
+//   experiment" -- that experiment was RUN and WON on 2026-07-11            //
+//   (eureka15): VIAB_CACHED = 1, so ram1_cache_inh = 0.  It is the SECOND   //
+//   place this claim was written, and the twin in the bridge header was     //
+//   equally wrong; two copies of a fact drift independently and neither     //
+//   reader learns they disagree.  Coherency is by construction --           //
+//   cpu_cache_new's snoop folds EVERY chip-port write, Agnus DMA included.  //
+//   MEASURED 2026-08-11: worth ~11 % at its ceiling, and the cache is small //
+//   (visible at 4 KB, gone by 16 KB) because a HIT still pays the h2f       //
+//   crossing.                                                               //
+//   CLASSIC: byte-identical to the original wiring (explicit inhibit=0 ==  //
+//   the previous unconnected-port default).                                //
+//------------------------------------------------------------------------//
+`ifdef HYBRID_EMU
+wire [24:1] ram1_cpu_addr  = hb_cp_addr;
+wire [15:0] ram1_cpu_wr    = hb_cp_wdata;
+wire        ram1_cpu_u     = hb_cp_u;
+wire        ram1_cpu_l     = hb_cp_l;
+wire  [1:0] ram1_cpu_state = hb_cp_state;
+wire        ram1_cpu_cs    = hb_cp_cs;
+wire        ram1_cache_inh = ~VIAB_CACHED;   // eureka15: cached (snoop-coherent)
+// hybrid: the seam's cache policy is the DESIGN's, not the parked wrapper's
+// cacr (which tracks OSD cpucfg): enable bit only, no freeze/clear surprises.
+wire  [3:0] ram1_cacr      = {3'b000, VIAB_CACHED};
+`else
+wire [24:1] ram1_cpu_addr  = {2'b00, ram_addr[22:1]};
+wire [15:0] ram1_cpu_wr    = ram_din;
+wire        ram1_cpu_u     = ram_uds;
+wire        ram1_cpu_l     = ram_lds;
+wire  [1:0] ram1_cpu_state = cpu_state;
+wire        ram1_cpu_cs    = ~zram_sel & ram_cs;
+wire        ram1_cache_inh = 1'b0;
+wire  [3:0] ram1_cacr      = cpu_cacr;       // classic: the soft CPU's CACR, as always
+`endif
+
+sdram_ctrl ram1
+(
+	.sysclk       (clk_114         ),
+	.reset_n      (~reset_d        ),
+	.c_7m         (c1              ),
+
+	.cache_rst    (cpu_rst         ),
+	.cpu_cache_ctrl(ram1_cacr      ),  // VIA-B: hybrid = design-fixed enable
+	.cache_inhibit(ram1_cache_inh  ),  // VIA-B: hybrid = cached since eureka15
+
+	.sd_data      (SDRAM_DQ        ),
+	.sd_addr      (SDRAM_A         ),
+	.sd_dqm       ({SDRAM_DQMH, SDRAM_DQML}),
+	.sd_cs        (SDRAM_nCS       ),
+	.sd_ba        (SDRAM_BA        ),
+	.sd_we        (SDRAM_nWE       ),
+	.sd_ras       (SDRAM_nRAS      ),
+	.sd_cas       (SDRAM_nCAS      ),
+	.sd_cke       (SDRAM_CKE       ),
+	.sd_clk       (SDRAM_CLK       ),
+
+	.cpuWR        (ram1_cpu_wr     ),
+	.cpuAddr      (ram1_cpu_addr   ),
+	.cpuU         (ram1_cpu_u      ),
+	.cpuL         (ram1_cpu_l      ),
+	.cpustate     (ram1_cpu_state  ),
+	.cpuCS        (ram1_cpu_cs     ),
+	.cpuRD        (ram_dout1       ),
+	.ramready     (ram_ready1      ),
+	.write_busy   (ram1_write_busy ),  // VIA-B: drain-complete for seam writes
+
+	.chipWR       (cw_ram_data        ),
+	.chipAddr     (cw_ram_address     ),
+	.chipU        (cw_ram_bhe        ),
+	.chipL        (cw_ram_ble        ),
+	.chipRW       (cw_ram_we         ),
+	.chipDMA      (cw_ram_oe         ),
+	.chipRD       (ramdata_in      ),
+	.chip48       (chip48          )
+);
+
+//------------------------------------------------------------------------//
+// ddram_ctrl ram2 -- REMOVED 2026-08-12.                                  //
+//                                                                        //
+// The FPGA-side Zorro III fast-RAM controller.  Its select was            //
+// `zram_sel & ram_cs`, and ram_sel/ram_addr come from cpu_wrapper, which  //
+// is permanently parked (no soft CPU at all) -- so it never saw a cycle.  //
+// Its readback fed that same parked wrapper.  Guest fast RAM comes from   //
+// Emu68 out of HPS DDR3 on the A9 side, so a fabric Z3 controller is      //
+// redundant here by architecture, not merely unused.                      //
+//                                                                        //
+// It stayed in the bitstream only because it drove the DDRAM_* pins.      //
+// Those are ports of `emu` (sys/emu_ports.vh, framework -- not ours to    //
+// edit), so they are tied off explicitly below.                           //
+//------------------------------------------------------------------------//
+// ⚠ DDRAM_CLK is NOT tied to 0: sys_top wires it to sysmem's ram2_clk, i.e. it
+// clocks the f2sdram bridge port and its safe-terminator.  A dead clock there
+// leaves that logic in an undefined domain.  RD/WE are held low, so the port is
+// idle -- but it stays clocked.
+assign DDRAM_CLK      = clk_sys;
+assign DDRAM_BURSTCNT = 8'd0;
+assign DDRAM_ADDR     = 29'd0;
+assign DDRAM_RD       = 1'b0;
+assign DDRAM_DIN      = 64'd0;
+assign DDRAM_BE       = 8'd0;
+assign DDRAM_WE       = 1'b0;
+
+wire [15:0] fastchip_dout;
+wire        fastchip_sel;
+wire        fastchip_lds;
+wire        fastchip_uds;
+wire        fastchip_rnw;
+wire        fastchip_selack;
+wire        fastchip_ready;
+wire        fastchip_lw;
+
+wire        ide_fast;
+wire        ide_f_led;
+wire        ide_f_irq;
+wire  [5:0] ide_f_req;
+wire [15:0] ide_f_readdata;
+
+// D19 (2026-08-06, B-33): ONE net, used twice on purpose.
+// It enables fastchip's IDE decoders (sel_ide/sel_gayle, fastchip.v:83-84) AND gates the
+// bridge's fc_sel for the same two windows.  Declaring it once makes "the bridge only
+// selects fastchip when fastchip can answer" structural rather than a convention two
+// files apart -- that is the B-24 decode hole (an unbacked fc_sel costs the full 9.2 ms
+// dtack_to watchdog x16 firmware retries ~= 150 ms per access), and it is also half of
+// the one-responder invariant: minimig.v:824 gives the CHIPSET Gayle `ide_ena & ~ide_fast`,
+// so the two Gayle instances are complementary by construction and can never both decode.
+wire        fc_ide_ena = ide_ena & ide_fast;
+
+// D17 (2026-08-04): who drives fastchip's control strobes.
+// Historically cpu_wrapper did, unconditionally.  BigMig has no soft CPU, so
+// cpu_wrapper contains no CPU, `fastchip_sel` never asserts, and Akiko + the RTG
+// registers are unreachable — the RTG card simply does not exist for the guest.
+// In hybrid the m68k is Emu68 and the bridge already drives chip_addr/chip_din, so
+// only the strobes were missing.  chip_lds/chip_uds/chip_rw carry the bridge's own
+// active-low strobes — the same polarity cpu_wrapper presented — so the inversions
+// at the port below are unchanged.  The !HYBRID_EMU path is byte-identical.
+`ifdef HYBRID_EMU
+wire        fc_sel_i = hb_fc_sel;
+wire        fc_lds_i = chip_lds;
+wire        fc_uds_i = chip_uds;
+wire        fc_rnw_i = chip_rw;
+wire        fc_lw_i  = 1'b0;        // the seam transacts 16 bits at a time
+`else
+wire        fc_sel_i = fastchip_sel;
+wire        fc_lds_i = fastchip_lds;
+wire        fc_uds_i = fastchip_uds;
+wire        fc_rnw_i = fastchip_rnw;
+wire        fc_lw_i  = fastchip_lw;
+`endif
+
+// fastchip is working on CPU clock.
+// Only high performance 68020 devices are inside
+fastchip fastchip
+(
+	.clk          (clk_114           ),
+	.cyc          (cyc               ),
+	.clk_sys      (clk_sys           ),
+
+	.reset        (~cpu_rst | ~cpu_nrst_in ),  // D12: follows the seam reset in hybrid
+	.sel          (fc_sel_i          ),
+	.sel_ack      (fastchip_selack   ),
+	.ready        (fastchip_ready    ),
+
+	.addr         ({chip_addr,1'b0}  ),
+	.din          (chip_din          ),
+	.dout         (fastchip_dout     ),
+	.lds          (~fc_lds_i         ),
+	.uds          (~fc_uds_i         ),
+	.rnw          (fc_rnw_i          ),
+	.longword     (fc_lw_i           ),
+
+	//RTG framebuffer control
+	.rtg_ena      (FB_EN             ),
+	.rtg_hsize    (FB_WIDTH          ),
+	.rtg_vsize    (FB_HEIGHT         ),
+	.rtg_format   (FB_FORMAT         ),
+	.rtg_base     (FB_BASE           ),
+	.rtg_stride   (FB_STRIDE         ),
+	.rtg_pal_clk  (FB_PAL_CLK        ),
+	.rtg_pal_dw   (FB_PAL_DOUT       ),
+	.rtg_pal_dr   (FB_PAL_DIN        ),
+	.rtg_pal_a    (FB_PAL_ADDR       ),
+	.rtg_pal_wr   (FB_PAL_WR         ),
+
+	.ide_ena      (fc_ide_ena        ),  // D19: same net the bridge gates fc_sel with
+	.ide_irq      (ide_f_irq         ),
+	.ide_req      (ide_f_req         ),
+	.ide_address  (ide_addr          ),
+	.ide_write    (ide_wr            ),
+	.ide_writedata(ide_dout          ),
+	.ide_read     (ide_rd            ),
+	.ide_readdata (ide_f_readdata    ),
+	.ide_led      (ide_f_led         )
+);
+
+
+////////////////////////////  UART  //////////////////////////////////// 
+
+wire uart_cts, uart_dsr, uart_rts, uart_dtr;
+wire uart_tx, uart_rx;
+
+wire hps_mpu = (uart_mode >= 3);
+
+assign UART_RTS = ~hps_mpu & uart_rts;
+assign UART_DTR = ~hps_mpu & uart_dtr;
+assign uart_cts = ~hps_mpu & UART_CTS;
+assign uart_dsr = ~hps_mpu & UART_DSR;
+assign uart_rx  = uart_mode ? UART_RXD : midi_rx;
+assign UART_TXD = (hps_mpu & mt32_use) | uart_tx;
+
+///////////////////////////////////////////////////////////////////////
+
+//// minimig top ////
+wire  [1:0] cpucfg;
+`ifdef HYBRID_EMU
+                          // cpu byte bit5) -- consumed by the HYBRID_EMU mux above
+`endif
+wire  [2:0] cachecfg;
+wire  [6:0] memcfg;
+wire        bootrom;   
+wire [15:0] ram_data;      // sram data bus
+wire [15:0] ramdata_in;    // sram data bus in
+wire [47:0] chip48;        // big chip read
+wire [23:1] ram_address;   // sram address bus
+wire        _ram_bhe;      // sram upper byte select
+wire        _ram_ble;      // sram lower byte select
+wire        _ram_we;       // sram write enable
+wire        _ram_oe;       // sram output enable
+
+// ===================================================================== //
+// Chip-write posting buffer between the minimig chip-bus write outputs and the ram1     //
+// chip port.  A chip write whose SDRAM slot is stolen by an Agnus DMA cycle was silently //
+// dropped -- the bridge gives DTACK on arbitration, not on commit -- so a whole burst    //
+// could vanish with nothing reporting it.                                                //
+// ===================================================================== //
+localparam CHIP_WRITE_RETRY_EN = 1'b1;
+wire        minimig_dbr;      // Agnus dbr, exposed from minimig.v
+wire        minimig_ovl;      // Kickstart overlay, exposed from minimig.v (VIA-B decode)
+wire [23:1] cw_ram_address;
+wire [15:0] cw_ram_data;
+wire        cw_ram_bhe, cw_ram_ble, cw_ram_we, cw_ram_oe;
+
+chip_write_retry u_chip_write_retry
+(
+	.clk114   (clk_114              ),
+	.c_7m     (c1                   ),
+	.reset_n  (~reset_d             ),
+	.bypass   (~CHIP_WRITE_RETRY_EN ),
+	.dbr      (minimig_dbr          ),
+	.in_addr  (ram_address          ),
+	.in_data  (ram_data             ),
+	.in_we    (_ram_we              ),
+	.in_oe    (_ram_oe              ),
+	.in_bhe   (_ram_bhe             ),
+	.in_ble   (_ram_ble             ),
+	.out_addr (cw_ram_address       ),
+	.out_data (cw_ram_data          ),
+	.out_we   (cw_ram_we            ),
+	.out_oe   (cw_ram_oe            ),
+	.out_bhe  (cw_ram_bhe           ),
+	.out_ble  (cw_ram_ble           )
+);
+
+wire [14:0] ldata;         // left DAC data
+wire [14:0] rdata;         // right DAC data
+wire [9:0]  ldata_okk;     // left DAC data  (PWM vol version)
+wire [9:0]  rdata_okk;     // right DAC data (PWM vol version)
+wire        vs;
+wire        hs;
+wire  [1:0] ar;
+wire        ntsc;
+
+wire  [5:0] ide_c_req;
+wire [15:0] ide_c_readdata;
+wire        ide_c_led;
+wire        ide_ena;
+
+wire [15:0] toccata_aud_left;
+wire [15:0] toccata_aud_right;
+
+minimig minimig
+(
+	//m68k pins
+	.cpu_address  (chip_addr        ), // M68K address bus
+	.cpu_data     (chip_dout        ), // M68K data bus
+	.cpudata_in   (chip_din         ), // M68K data in
+	._cpu_ipl     (chip_ipl         ), // M68K interrupt request
+	._cpu_as      (chip_as          ), // M68K address strobe
+	._cpu_uds     (chip_uds         ), // M68K upper data strobe
+	._cpu_lds     (chip_lds         ), // M68K lower data strobe
+	.cpu_r_w      (chip_rw          ), // M68K read / write
+	._cpu_dtack   (chip_dtack       ), // M68K data acknowledge
+	._cpu_reset   (cpu_rst          ), // M68K reset
+	._cpu_reset_in(cpu_nrst_in      ), // M68K reset out: hybrid = the seam's stretched
+	                                   // OVL[1] chipset reset (D12/S-S1, parked soft-CPU
+	                                   // bypassed); classic = TG68/fx68k nResetOut
+	.nmi_addr     (cpu_nmi_addr     ), // M68K NMI address
+
+	//sram pins
+	.ram_data     (ram_data         ), // SRAM data bus
+	.ramdata_in   (ramdata_in       ), // SRAM data bus in
+	.ram_address  (ram_address      ), // SRAM address bus
+	._ram_bhe     (_ram_bhe         ), // SRAM upper byte select
+	._ram_ble     (_ram_ble         ), // SRAM lower byte select
+	._ram_we      (_ram_we          ), // SRAM write enable
+	._ram_oe      (_ram_oe          ), // SRAM output enable
+	.chip_dbr     (minimig_dbr      ), // Agnus dbr -> chip_write_retry (DR-1 fix)
+	.chip_ovl     (minimig_ovl      ), // Kickstart overlay -> hybrid bridge VIA-B decode (#14)
+	.chip48       (chip48           ), // big chipram read
+
+	//system  pins
+	.rst_ext      (reset_d          ), // reset from ctrl block
+	.rst_out      (                 ), // minimig reset status
+	.clk          (clk_sys          ), // output clock c1 ( 28.687500MHz)
+	.clk7_en      (clk7_en          ), // 7MHz clock enable
+	.clk7n_en     (clk7n_en         ), // 7MHz negedge clock enable
+	.c1           (c1               ), // clk28m clock domain signal synchronous with clk signal
+	.c3           (c3               ), // clk28m clock domain signal synchronous with clk signal delayed by 90 degrees
+	.cck          (cck              ), // colour clock output (3.54 MHz)
+	.eclk         (eclk             ), // 0.709379 MHz clock enable output (clk domain pulse)
+
+	//rs232 pins
+	.rxd          (uart_rx          ), // RS232 receive
+	.txd          (uart_tx          ), // RS232 send
+	.cts          (uart_cts         ), // RS232 clear to send
+	.rts          (uart_rts         ), // RS232 request to send
+	.dtr          (uart_dtr         ), // RS232 Data Terminal Ready
+	.dsr          (uart_dsr         ), // RS232 Data Set Ready
+	.cd           (uart_dsr         ), // RS232 Carrier Detect
+	.ri           (1                ), // RS232 Ring Indicator
+
+	//I/O
+	._joy1        (~JOY0            ), // joystick 1 [fire4,fire3,fire2,fire,up,down,left,right] (default mouse port)
+	._joy2        (~JOY1            ), // joystick 2 [fire4,fire3,fire2,fire,up,down,left,right] (default joystick port)
+	._joy3        (~JOY2            ), // joystick 1 [fire4,fire3,fire2,fire,up,down,left,right]
+	._joy4        (~JOY3            ), // joystick 2 [fire4,fire3,fire2,fire,up,down,left,right]
+	.joya1        (JOYA0            ),
+	.joya2        (JOYA1            ),
+	.mouse_btn    (mouse_buttons    ), // mouse buttons
+	.kbd_mouse_data (kbd_mouse_data ), // mouse direction data, keycodes
+	.kbd_mouse_type (kbd_mouse_type ), // type of data
+	.kms_level    (kbd_mouse_level  ),
+	.pwr_led      (pwr_led          ), // power led
+	.fdd_led      (LED_USER         ),
+	.hdd_led      (ide_c_led        ),
+	.rtc          (RTC              ),
+
+	//host controller interface (SPI)
+	.IO_UIO       (io_uio           ),
+	.IO_FPGA      (io_fpga          ),
+	.IO_STROBE    (io_strobe        ),
+	.IO_WAIT      (io_wait          ),
+	.IO_DIN       (io_din           ),
+	.IO_DOUT      (fpga_dout        ),
+
+	//video
+	._hsync       (hs               ), // horizontal sync
+	._vsync       (vs               ), // vertical sync
+	.field1       (field1           ),
+	.lace         (lace             ),
+	.red          (r                ), // red
+	.green        (g                ), // green
+	.blue         (b                ), // blue
+	.hblank       (hblank           ),
+	.vblank       (vbl              ),
+	.ar           (ar               ),
+	.scanline     (fx               ),
+	//.ce_pix     (ce_pix           ),
+	.res          (res              ),
+	.ntsc         (ntsc             ),
+
+	//audio
+	.ldata        (ldata            ), // left DAC data
+	.rdata        (rdata            ), // right DAC data
+	.ldata_okk    (ldata_okk        ), // 9bit
+	.rdata_okk    (rdata_okk        ), // 9bit
+
+	.aud_mix      (AUDIO_MIX        ),
+
+	//toccata soundcard
+	.toccata_ena  (toccata_ena),
+	.toccata_base (toccata_base),
+	.toccata_aud_left (toccata_aud_left),
+	.toccata_aud_right(toccata_aud_right),
+	
+	//user i/o
+	.cpucfg       (cpucfg           ), // CPU config
+`ifdef HYBRID_EMU
+`endif
+	.cachecfg     (cachecfg         ), // Cache config
+	.memcfg       (memcfg           ), // memory config
+	.bootrom      (bootrom          ), // bootrom mode. Needed here to tell tg68k to also mirror the 256k Kickstart 
+
+	.ide_fast     (ide_fast         ),
+	.ide_ext_irq  (ide_f_irq        ),
+	.ide_ena      (ide_ena          ),
+	.ide_req      (ide_c_req        ),
+	.ide_address  (ide_addr         ),
+	.ide_write    (ide_wr           ),
+	.ide_writedata(ide_dout         ),
+	.ide_read     (ide_rd           ),
+	.ide_readdata (ide_c_readdata   )
+);
+
+// power led control
+wire pwr_led;
+reg [5:0] led_cnt;
+reg led_dim;
+
+always @ (posedge clk_sys) begin
+  led_cnt <= led_cnt + 1'd1;
+  led_dim <= |led_cnt[5:2];
+end
+
+assign LED_POWER[0] = pwr_led | ~led_dim;
+
+assign FB_FORCE_BLANK = 0;
+
+reg ce_out = 0;
+always @(posedge CLK_VIDEO) begin
+	reg [3:0] div;
+	reg [3:0] add;
+	reg [1:0] fs_res;
+	reg old_vs;
+	
+	div <= div + add;
+	if(~hblank & ~vblank) fs_res <= fs_res | res;
+
+	old_vs <= vs;
+	if(old_vs & ~vs) begin
+		fs_res <= 0;
+		div <= 0;
+		add <= 1; // 7MHz
+		if(fs_res[0]) add <= 2; // 14MHz
+		if(fs_res[1] | (~status[42] & ~scandoubler)) add <= 4; // 28MHz
+	end
+
+	ce_out <= div[3] & !div[2:0];
+end
+
+assign ce_pix = ce_out;
+
+wire [2:0] fx;
+wire       scandoubler = (fx || forced_scandoubler) & ~lace;
+wire [7:0] R,G,B;
+
+video_mixer #(.LINE_LENGTH(2000), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
+(
+	.*,
+	.hq2x(fx==1),
+	.ce_pix(ce_out),
+	.freeze_sync(),
+
+	.R(r),
+	.G(g),
+	.B(b),
+	.HSync(~hs),
+	.VSync(~vs),
+	.HBlank(~hde),
+	.VBlank(~vde),
+
+	.VGA_R(R),
+	.VGA_G(G),
+	.VGA_B(B)
+);
+
+assign CLK_VIDEO = clk_114;
+assign VGA_F1    = field1;
+assign VGA_R     = mt32_lcd ? {{2{mt32_lcd_pix}},R[7:2]} : R;
+assign VGA_G     = mt32_lcd ? {{2{mt32_lcd_pix}},G[7:2]} : G;
+assign VGA_B     = mt32_lcd ? {{2{mt32_lcd_pix}},B[7:2]} : B;
+
+wire [12:0] arx,ary;
+video_freak video_freak
+(
+	.*,
+	.VGA_DE_IN(VGA_DE),
+	.VGA_DE(),
+	.ARX((!ar) ? 12'd4 : (ar - 1'd1)),
+	.ARY((!ar) ? 12'd3 : 12'd0),
+	.VIDEO_ARX(arx),
+	.VIDEO_ARY(ary),
+	.CROP_SIZE(0),
+	.CROP_OFF(0),
+	.SCALE(status[45:43])
+);
+
+reg [11:0] fb_arx, fb_ary;
+always @(posedge CLK_VIDEO) begin
+	reg [11:0] x, y, x1, y1;
+	reg [1:0] cnt;
+	
+	cnt <= cnt + 1'd1;
+	case(cnt)
+		0: begin
+				x1 <= FB_WIDTH;
+				y1 <= FB_HEIGHT;
+				x  <= FB_WIDTH;
+				y  <= FB_HEIGHT;
+			end
+
+		1: if(x && ((x+x1) <= HDMI_WIDTH) && y && ((y+y1) <= HDMI_HEIGHT)) begin
+				x <= x+x1;
+				y <= y+y1;
+				cnt <= 1;
+			end
+
+		2: begin
+				fb_arx <= x;
+				fb_ary <= y;
+			end
+	endcase
+end
+
+assign VIDEO_ARX = FB_EN ? {status[46], fb_arx} : arx;
+assign VIDEO_ARY = FB_EN ? {status[46], fb_ary} : ary;
+
+// Hold the I/O-board RGB output CRT-safe while the RTG framebuffer owns the display.
+// CRT-safe is about SYNC RATES, not colour: a black picture still carrying a 45-75 kHz
+// sync train keeps stressing the deflection stage.  VGA_DISABLE parks HS/VS at their
+// inactive DC level and zeroes the DAC, so there is no pulse train at all.
+reg fb_en_vga = 0;
+always @(posedge CLK_VIDEO) begin
+	reg fb_en_s, vs_d;
+
+	fb_en_s <= FB_EN;
+	vs_d    <= vs;
+	if(vs_d & ~vs) fb_en_vga <= fb_en_s;
+end
+
+assign VGA_DISABLE = fb_en_vga;
+
+wire [2:0] sl = fx ? fx - 1'd1 : 3'd0;
+assign VGA_SL = sl[1:0];
+
+reg  hde;
+wire vde = ~(fvbl | svbl);
+
+wire [7:0] red, green, blue, r,g,b;
+wire lace, field1;
+wire hblank, vbl;
+wire vblank = vbl | ~vs;
+reg  fhbl, fvbl, shbl, svbl;
+wire hbl = fhbl | shbl | ~hs;
+
+wire  [1:0] res;
+
+wire sset;
+wire [11:0] shbl_l, shbl_r;
+wire [11:0] svbl_t, svbl_b;
+
+reg  [11:0] hbl_l=0, hbl_r=0;
+reg  [11:0] hsta, hend, hmax, hcnt;
+reg  [11:0] hsize;
+always @(posedge clk_sys) begin
+	reg old_hs;
+	reg old_hblank;
+
+	old_hs <= hs;
+	old_hblank <= hblank;
+
+	hcnt <= hcnt + 1'd1;
+	if(~hs) hcnt <= 0;
+
+	if(old_hblank & ~hblank) hend <= hcnt;
+	if(~old_hblank & hblank) hsta <= hcnt;
+	if(old_hs & ~hs)         hmax <= hcnt;
+
+	if(hcnt == hend+hbl_l-2'd2) shbl <= 0;
+	if(hcnt == hsta+hbl_r-2'd2) shbl <= 1;
+
+	//force hblank
+	if(hcnt == 8)         fhbl <= 0;
+	if(hcnt == hmax-4'd8) fhbl <= 1;
+	
+	if(~old_hblank & hblank & ~field1 & (vcnt == 1'd1)) hsize <= hcnt - hend;
+end
+
+reg [11:0] vbl_t=0, vbl_b=0;
+reg [11:0] vend, vmax, f1_vend, f1_vsize, vcnt, vs_end;
+reg [11:0] vsize;
+always @(posedge clk_sys) begin
+	reg old_vs;
+	reg old_vblank, old_hs, old_hbl;
+
+	old_vs <= vs;
+	old_hs <= hs;
+	old_vblank <= vblank;
+	
+	if(old_hs & ~hs) vcnt <= vcnt + 1'd1;
+	if(~old_vblank & vblank) vcnt <= 0;
+
+	if(~lace | ~field1) begin
+		if(old_vblank & ~vblank) vend <= vcnt;
+		if(~old_vs & vs)         vs_end <= vcnt;
+		
+		if(~old_vblank & vblank) begin
+			vmax <= vcnt;
+			vsize <= vcnt - vend + f1_vsize;
+			f1_vsize <= 0;
+		end
+	end
+	else begin
+		if(old_vblank & ~vblank) f1_vend <= vcnt;
+		if(~old_vblank & vblank) begin
+			f1_vsize <= vcnt - f1_vend;
+		end
+	end
+
+	old_hbl <= hbl;
+	if((old_hbl & ~hbl) | !vcnt) begin
+		if(vcnt == vend+vbl_t) svbl <= 0;
+		if(vcnt == (vbl_b[11] ? vmax+vbl_b : vbl_b) ) svbl <= 1;
+
+		//force vblank
+		if(vcnt == vmax-1)    fvbl <= 1;
+		if(vcnt == vs_end+2)  fvbl <= 0;
+	end
+	
+	hde <= ~hbl;
+end
+
+always @(posedge clk_sys) begin
+	reg old_level;
+	reg alt = 0;
+
+	old_level <= kbd_mouse_level;
+	if((old_level ^ kbd_mouse_level) && (kbd_mouse_type==3)) begin
+		if(kbd_mouse_data == 'h41) begin //backspace
+			vbl_t <= 0; vbl_b <= 0;
+			hbl_l <= 0; hbl_r <= 0;
+		end
+		else if(kbd_mouse_data == 'h4c) begin //up
+			if(alt) vbl_b <= vbl_b + 1'd1;
+			else    vbl_t <= vbl_t + 1'd1;
+		end
+		else if(kbd_mouse_data == 'h4d) begin //down
+			if(alt) vbl_b <= vbl_b - 1'd1;
+			else    vbl_t <= vbl_t - 1'd1;
+		end
+		else if(kbd_mouse_data == 'h4f) begin //left
+			if(alt) hbl_r <= hbl_r + 3'd4;
+			else    hbl_l <= hbl_l + 3'd4;
+		end
+		else if(kbd_mouse_data == 'h4e) begin //right
+			if(alt) hbl_r <= hbl_r - 3'd4;
+			else    hbl_l <= hbl_l - 3'd4;
+		end
+		else if(kbd_mouse_data == 'h64 || kbd_mouse_data == 'h65) begin //alt press
+			alt <= 1;
+		end
+		else if(kbd_mouse_data == 'hE4 || kbd_mouse_data == 'hE5) begin //alt release
+			alt <= 0;
+		end
+	end
+	
+	if(sset) begin
+		vbl_t <= svbl_t; vbl_b <= svbl_b;
+		hbl_l <= shbl_l; hbl_r <= shbl_r;
+	end
+end
+
+
+reg [11:0] scr_hbl_l, scr_hbl_r;
+reg [11:0] scr_vbl_t, scr_vbl_b;
+reg [11:0] scr_hsize, scr_vsize;
+reg  [1:0] scr_res;
+reg  [6:0] scr_flg;
+
+always @(posedge clk_sys) begin
+	reg old_vblank;
+
+	old_vblank <= vblank;
+	if(old_vblank & ~vblank) begin
+		scr_hbl_l <= hbl_l;
+		scr_hbl_r <= hbl_r;
+		scr_vbl_t <= vbl_t;
+		scr_vbl_b <= vbl_b;
+		scr_hsize <= hsize;
+		scr_vsize <= vsize;
+		scr_res   <= res;
+
+		if(scr_res != res || scr_vsize != vsize || scr_hsize != hsize) scr_flg <= scr_flg + 1'd1;
+	end
+end
+
+////////////////////////////  MT32pi  ////////////////////////////////// 
+
+wire        mt32_reset    = status[32] | reset;
+wire        mt32_disable  = status[33];
+wire        mt32_mode_req = status[34];
+wire  [1:0] mt32_rom_req  = status[36:35];
+wire  [7:0] mt32_sf_req   = status[39:37];
+wire  [1:0] mt32_info     = status[41:40];
+wire        midi_tx       = uart_tx;
+
+wire [15:0] mt32_i2s_r, mt32_i2s_l;
+wire  [7:0] mt32_mode, mt32_rom, mt32_sf;
+wire        mt32_lcd_en, mt32_lcd_pix, mt32_lcd_update;
+wire        midi_rx;
+
+wire mt32_newmode;
+wire mt32_available;
+wire mt32_use  = mt32_available & ~mt32_disable;
+wire mt32_mute = mt32_available &  mt32_disable;
+
+mt32pi mt32pi
+(
+	.*,
+	.CE_PIXEL(ce_pix_mt32),
+	.reset(mt32_reset),
+	.midi_tx(midi_tx | mt32_mute)
+);
+
+wire  [4:0] mt32_cfg = (mt32_mode == 'hA2) ? {mt32_sf[2:0],  2'b10} :
+                       (mt32_mode == 'hA1) ? {mt32_rom[1:0], 2'b01} : 5'd0;
+
+reg mt32_info_req;
+reg [3:0] mt32_info_disp;
+always @(posedge clk_sys) begin
+	reg old_mode;
+
+	old_mode <= mt32_newmode;
+	mt32_info_req <= (old_mode ^ mt32_newmode) && (mt32_info == 1);
+	
+	mt32_info_disp <= (mt32_mode == 'hA2) ? (4'd1 + mt32_sf[2:0]) :
+                     (mt32_mode == 'hA1 && mt32_rom == 0) ?  4'd9 :
+                     (mt32_mode == 'hA1 && mt32_rom == 1) ?  4'd10 :
+                     (mt32_mode == 'hA1 && mt32_rom == 2) ?  4'd11 : 4'd12;
+end
+
+reg mt32_lcd_on;
+always @(posedge CLK_VIDEO) begin
+	int to;
+	reg old_update;
+
+	old_update <= mt32_lcd_update;
+	if(to) to <= to - 1;
+
+	if(mt32_info == 2) mt32_lcd_on <= 1;
+	else if(mt32_info != 3) mt32_lcd_on <= 0;
+	else begin
+		if(!to) mt32_lcd_on <= 0;
+		if(old_update ^ mt32_lcd_update) begin
+			mt32_lcd_on <= 1;
+			to <= 114000000 * 2;
+		end
+	end
+end
+
+wire mt32_lcd = mt32_lcd_on & mt32_lcd_en;
+
+reg ce_pix_mt32;
+always @(posedge CLK_VIDEO) begin
+	reg [3:0] div;
+	
+	div <= div + 1'd1;
+	ce_pix_mt32 <= !div;
+end
+
+/* ------------------------------------------------------------------------------ */
+
+wire flt_en    = ~status[48] ? pwr_led : status[47];
+wire aud_1200  = status[49];
+wire paula_pwm = status[50];
+
+wire [15:0] paula_smp_l = (paula_pwm ? {ldata_okk[8:0], 7'b0} : {ldata[14:0], 1'b0});
+wire [15:0] paula_smp_r = (paula_pwm ? {rdata_okk[8:0], 7'b0} : {rdata[14:0], 1'b0});
+
+// LPF 4400Hz, 1st order, 6db/oct
+wire [15:0] lpf4400_l, lpf4400_r;
+IIR_filter #(0) lpf4400
+(
+	.clk(clk_sys),
+	.reset(reset),
+
+	.ce(clk7_en | clk7n_en),
+	.sample_ce(1),
+
+	.cx (40'd4304835800),
+	.cx0(1),
+	.cy0(-2088941),
+	
+	.input_l(paula_smp_l),
+	.input_r(paula_smp_r),
+	.output_l(lpf4400_l),
+	.output_r(lpf4400_r)
+);
+
+wire [15:0] audm_l = aud_1200 ? paula_smp_l : lpf4400_l;
+wire [15:0] audm_r = aud_1200 ? paula_smp_r : lpf4400_r;
+
+// LPF 3000Hz 1st + 3400Hz 1st
+wire [15:0] lpf3275_l, lpf3275_r;
+IIR_filter #(0) lpf3275
+(
+	.clk(clk_sys),
+	.reset(reset),
+
+	.ce(clk7_en | clk7n_en),
+	.sample_ce(1),
+
+	.cx (40'd8536629),
+	.cx0(2),
+	.cx1(1),
+	.cy0(-4182432),
+	.cy1(2085297),
+
+	.input_l(audm_l),
+	.input_r(audm_r),
+	.output_l(lpf3275_l),
+	.output_r(lpf3275_r)
+);
+
+reg [15:0] aud_l, aud_r;
+always @(posedge CLK_AUDIO) begin
+	reg [15:0] old_l0, old_l1, old_r0, old_r1;
+
+	old_l0 <= flt_en ? lpf3275_l : audm_l;
+	old_l1 <= old_l0;
+	if(old_l0 == old_l1) aud_l <= old_l1;
+
+	old_r0 <= flt_en ? lpf3275_r : audm_r;
+	old_r1 <= old_r0;
+	if(old_r0 == old_r1) aud_r <= old_r1;
+end
+
+wire  [15:0] cdda_l;
+wire  [15:0] cdda_r;
+wire  [15:0] cdda_dout;
+wire         cdda_req;
+wire         cdda_wr;
+
+cdda #(28375160) cdda
+(
+	.CLK(clk_sys),
+	.nRESET(~reset),
+	.WRITE_REQ(cdda_req),
+	.WRITE(cdda_wr),
+	.DIN(cdda_dout),
+	.AUDIO_L(cdda_l),
+	.AUDIO_R(cdda_r)
+);
+
+reg [15:0] out_l, out_r;
+always @(posedge CLK_AUDIO) begin
+	reg [16:0] tmp_l, tmp_r;
+
+	tmp_l <= {aud_l[15],aud_l} + {toccata_aud_left[15],toccata_aud_left} + (mt32_mute ? 17'd0 : {mt32_i2s_l[15],mt32_i2s_l}) + {cdda_l[15], cdda_l};
+	tmp_r <= {aud_r[15],aud_r} + {toccata_aud_right[15],toccata_aud_right} + (mt32_mute ? 17'd0 : {mt32_i2s_r[15],mt32_i2s_r}) + {cdda_r[15], cdda_r};
+
+	// clamp the output
+	out_l <= (^tmp_l[16:15]) ? {tmp_l[16], {15{tmp_l[15]}}} : tmp_l[15:0];
+	out_r <= (^tmp_r[16:15]) ? {tmp_r[16], {15{tmp_r[15]}}} : tmp_r[15:0];
+end
+
+assign AUDIO_S = 1;
+assign AUDIO_L = out_l;
+assign AUDIO_R = out_r;
+
+endmodule

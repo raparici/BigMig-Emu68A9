@@ -1,0 +1,65 @@
+db
+greybox_tmp
+incremental_db
+output_files
+simulation
+hc_output
+scaler
+hps_isw_handoff
+vip
+*_sim
+.qsys_edit
+PLLJ_PLLSPE_INFO.txt
+*.bak
+*.orig
+*.rej
+*.qdf
+*.rpt
+*.smsg
+# ⛔ NOT *.summary.  BUILD-AND-DEPLOY.md §5 requires BigMig.fit.summary to be archived
+# beside every .rbf we keep -- that rule exists because a month of fitter reports was lost
+# and a bitstream could no longer be compared against the one it replaced.  A blanket
+# ignore here silently defeats it: the artefacts get committed, the reports do not.
+output_files/*.summary
+*.done
+*.jdi
+*.pin
+*.sof
+*.qws
+*.ppf
+*.ddb
+build_id.v
+c5_pin_model_dump.txt
+*.sopcinfo
+*.csv
+*.f
+*.cmp
+*.sip
+*.spd
+*.bsf
+*~
+*.xml
+*_netlist
+# ⛔ NOT *.cdf.  BigMig.qsf:222 assigns CDF_FILE jtag.cdf, so it is a PROJECT INPUT and a
+# clone without it is incomplete.  (extra/clean.bat also deletes *.cdf -- same trap.)
+output_files/*.cdf
+
+# local lint/sim scratch binaries
+sys/lw_wrap
+sys/*.o
+
+# deployable artifacts (Drive-visible, not tracked)
+# builds/ was the old catch-all artefact folder; it is gone (2026-08-12), split into
+# internal_builds_ship / _diag / _experiments.  Those are TRACKED on purpose -- this repo
+# is the internal matrix and keeps its own artefacts.  They never travel to the public
+# repo, and that is enforced by SELECTION (internal_harness/PUBLICATION-CONTRACT.md 4),
+# not by .gitignore.
+builds/
+.DS_Store
+
+# The release set is staged here and published as a GitHub *Release* (assets), not as
+# repo content -- it keeps the clone light and the binaries versioned by tag instead.
+# ⚠ This is the one legitimate use of .gitignore in this repo: nothing is being hidden,
+# a build product is simply not tracked.  Internal material is kept out by SELECTION
+# (Toolkit-DE10/public-tree-check.py), never by exclusion.
+releases/
