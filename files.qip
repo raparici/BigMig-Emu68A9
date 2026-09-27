@@ -32,8 +32,14 @@ set_global_assignment -name VERILOG_FILE hps_ext.v
 # Emu68-A9 seam: AXI-3 (h2f master) -> AXI4-Lite adapter (review 2026-07 #1: was in no .qip)
 set_global_assignment -name VERILOG_FILE sys/h2f_axi3_to_lite.v
 set_global_assignment -name VERILOG_FILE rtl/cdda.v
+# RTG native-rate analog scanout and mouse-pointer overlay (analog and HDMI)
+set_global_assignment -name VERILOG_FILE rtl/rtg_ddr_reader.v
+set_global_assignment -name VERILOG_FILE rtl/rtg_scanout.v
+set_global_assignment -name VERILOG_FILE rtl/rtg_sprite_overlay.v
+set_global_assignment -name VERILOG_FILE rtl/rtg_hdmi_osd_sprite.v
 set_global_assignment -name SDC_FILE BigMig.sdc
 # Emu68-A9 seam CDC constraints -- false-path/max-delay on the
 # seam_engine REQ/ACK toggle + payload and the 2-FF reset/OVL/IPL synchronisers.
 set_global_assignment -name SDC_FILE sys/seam.sdc
+set_global_assignment -name SDC_FILE sys/rtg_scanout.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE BigMig.sv

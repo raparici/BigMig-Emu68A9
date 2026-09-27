@@ -27,6 +27,7 @@ module seam_ipl
 
     input             sync_clk,        // 28 MHz Amiga chip-bus clock
     input      [2:0]  ipl_n,           // Paula IPL, active low
+    input             blt_busy,        // blitter busy (sync_clk) -> readdata bit4
     input             chip_reset_n     // composite m68k reset-line view
 );
 
@@ -99,7 +100,10 @@ module seam_ipl
         end
     end
 
-    assign readdata   = {4'b0000, rst_m2, ipl_pub};
+    // blitter busy: advisory, a sample one clock late is harmless
+    reg blt_m1 = 1'b0, blt_m2 = 1'b0, blt_m3 = 1'b0;
+    always @(posedge clk) begin blt_m1 <= blt_busy; blt_m2 <= blt_m1; blt_m3 <= blt_m2; end
+    assign readdata   = {3'b000, blt_m3, rst_m2, ipl_pub};
     assign epoch_gray = eg_m2;
 
 endmodule

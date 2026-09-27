@@ -676,6 +676,7 @@ wire  [1:0] seam_h2f_bresp;
 wire        seam_h2f_bvalid;
 wire        seam_h2f_bready;
 wire [24:0] seam_h2f_araddr;
+wire  [2:0] seam_h2f_arsize;
 wire  [2:0] seam_h2f_arprot;
 wire        seam_h2f_arvalid;
 wire        seam_h2f_arready;
@@ -839,6 +840,7 @@ h2f_axi3_to_lite #(
 	.m_bvalid  (seam_h2f_bvalid),
 	.m_bready  (seam_h2f_bready),
 	.m_araddr  (seam_h2f_araddr),
+	.m_arsize  (seam_h2f_arsize),
 	.m_arprot  (seam_h2f_arprot),
 	.m_arvalid (seam_h2f_arvalid),
 	.m_arready (seam_h2f_arready),
@@ -992,7 +994,8 @@ wire         bob_deint;
 		// framebuffer. RTG comes out at ~1:1, so the FIR has nothing to interpolate and only softens
 		// what is already pixel-exact -- Nearest is the exact choice, as it is for Main's own
 		// framebuffer. With both FB_EN and LFB_EN low the expression collapses to the original.
-		.mode     ({~lowlat,LFB_EN ? LFB_FLT : (~FB_EN & |scaler_flt),2'b00}),
+		// RTG modes of up to 480 lines are scaled up, so they keep the filters
+		.mode     ({~lowlat,LFB_EN ? LFB_FLT : ((~FB_EN | (FB_HEIGHT <= 12'd480)) & |scaler_flt),2'b00}),
 		.poly_clk (clk_sys),
 		.poly_a   (coef_addr),
 		.poly_dw  (coef_data),
@@ -1069,6 +1072,23 @@ always @(posedge clk_sys) begin
 		FB_BASE   <= fb_base;
 		FB_STRIDE <= fb_stride;
 	end
+end
+
+// the core's own RTG descriptor for the native scanout: FB_* carries Main's framebuffer while LFB_EN is set
+reg        RTG_EN     = 0;
+reg  [5:0] RTG_FMT    = 0;
+reg [11:0] RTG_WIDTH  = 0;
+reg [11:0] RTG_HEIGHT = 0;
+reg [31:0] RTG_BASE   = 0;
+reg [13:0] RTG_STRIDE = 0;
+
+always @(posedge clk_sys) begin
+	RTG_EN     <= fb_en;
+	RTG_FMT    <= fb_fmt;
+	RTG_WIDTH  <= fb_width;
+	RTG_HEIGHT <= fb_height;
+	RTG_BASE   <= fb_base;
+	RTG_STRIDE <= fb_stride;
 end
 
 `ifdef MISTER_FB
@@ -1385,6 +1405,10 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
 		.de_out(hdmi_de_mask)
 	);
 
+	// RTG mouse pointer between shadowmask and hdmi_osd (rtg_hdmi_osd_sprite, after the emu instance)
+	wire [23:0] hdmi_data_spr;
+	wire        hdmi_de_spr, hdmi_vs_spr, hdmi_hs_spr;
+
 	wire [23:0] hdmi_data_osd;
 	wire        hdmi_de_osd, hdmi_vs_osd, hdmi_hs_osd;
 
@@ -1397,10 +1421,10 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
 		.io_din(io_din),
 
 		.clk_video(clk_hdmi),
-		.din(hdmi_data_mask),
-		.hs_in(hdmi_hs_mask),
-		.vs_in(hdmi_vs_mask),
-		.de_in(hdmi_de_mask),
+		.din(hdmi_data_spr),
+		.hs_in(hdmi_hs_spr),
+		.vs_in(hdmi_vs_spr),
+		.de_in(hdmi_de_spr),
 
 		.dout(hdmi_data_osd),
 		.hs_out(hdmi_hs_osd),
@@ -1543,6 +1567,16 @@ assign HDMI_TX_HS = hdmi_out_hs;
 assign HDMI_TX_VS = hdmi_out_vs;
 assign HDMI_TX_DE = hdmi_out_de;
 assign HDMI_TX_D  = hdmi_out_d;
+
+// native-rate RTG analog scanout (instantiated at the end of the module), for RTG modes up to 640x480
+wire        rtg_native_en = 1'b1;
+
+wire        rtg_scanout_active = RTG_EN & rtg_native_en &
+                                 (RTG_HEIGHT != 12'd0) & (RTG_HEIGHT <= 12'd480) &
+                                 (RTG_WIDTH  != 12'd0) & (RTG_WIDTH  <= 12'd640) &
+                                 rtg_fmt_ok;
+wire [23:0] rtgs_o;
+wire        rtgs_hs, rtgs_vs, rtgs_cs, rtgs_de;
 
 /////////////////////////  VGA output  //////////////////////////////////
 
@@ -1731,18 +1765,19 @@ reg  [39:0] PhaseInc;
 	// de1 (the DAC blanking gate) leave the FPGA too on I/O boards, so a sog box would keep
 	// receiving a sync train on green while everything else is DC. Both arms are inert unless the
 	// ini enables sog or an MCP I/O board is present.
-	wire cs1 = vgas_en ? vgas_cs : VGA_DISABLE ? 1'b0 : vga_cs;
-	wire de1 = vgas_en ? vgas_de : VGA_DISABLE ? 1'b0 : vga_de;
+	// the native RTG scanout ranks between the ini scaler and VGA_DISABLE
+	wire cs1 = vgas_en ? vgas_cs : rtg_scanout_active ? rtgs_cs : VGA_DISABLE ? 1'b0 : vga_cs;
+	wire de1 = vgas_en ? vgas_de : rtg_scanout_active ? rtgs_de : VGA_DISABLE ? 1'b0 : vga_de;
 
-	assign VGA_VS = av_dis ? 1'bZ      :(((vgas_en ? (~vgas_vs ^ VS[12])                         : VGA_DISABLE ? 1'd1 : ~vga_vs) | csync_en) & subcarrier_out);
-	assign VGA_HS = av_dis ? 1'bZ      :  (vgas_en ? ((csync_en ? ~vgas_cs : ~vgas_hs) ^ HS[12]) : VGA_DISABLE ? 1'd1 : (csync_en ? ~vga_cs : ~vga_hs));
-	assign VGA_R  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[23:18]                               : VGA_DISABLE ? 6'd0 : vga_o[23:18];
-	assign VGA_G  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[15:10]                               : VGA_DISABLE ? 6'd0 : vga_o[15:10];
-	assign VGA_B  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[7:2]                                 : VGA_DISABLE ? 6'd0 : vga_o[7:2]  ;
+	assign VGA_VS = av_dis ? 1'bZ      :(((vgas_en ? (~vgas_vs ^ VS[12])                         : rtg_scanout_active ? ~rtgs_vs                        : VGA_DISABLE ? 1'd1 : ~vga_vs) | csync_en) & subcarrier_out);
+	assign VGA_HS = av_dis ? 1'bZ      :  (vgas_en ? ((csync_en ? ~vgas_cs : ~vgas_hs) ^ HS[12]) : rtg_scanout_active ? (csync_en ? ~rtgs_cs : ~rtgs_hs) : VGA_DISABLE ? 1'd1 : (csync_en ? ~vga_cs : ~vga_hs));
+	assign VGA_R  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[23:18]                               : rtg_scanout_active ? rtgs_o[23:18]                   : VGA_DISABLE ? 6'd0 : vga_o[23:18];
+	assign VGA_G  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[15:10]                               : rtg_scanout_active ? rtgs_o[15:10]                   : VGA_DISABLE ? 6'd0 : vga_o[15:10];
+	assign VGA_B  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[7:2]                                 : rtg_scanout_active ? rtgs_o[7:2]                     : VGA_DISABLE ? 6'd0 : vga_o[7:2]  ;
 
-	wire [1:0] vga_r  = vgas_en ? vgas_o[17:16] : VGA_DISABLE ? 2'd0 : vga_o[17:16];
-	wire [1:0] vga_g  = vgas_en ? vgas_o[9:8]   : VGA_DISABLE ? 2'd0 : vga_o[9:8];
-	wire [1:0] vga_b  = vgas_en ? vgas_o[1:0]   : VGA_DISABLE ? 2'd0 : vga_o[1:0];
+	wire [1:0] vga_r  = vgas_en ? vgas_o[17:16] : rtg_scanout_active ? rtgs_o[17:16] : VGA_DISABLE ? 2'd0 : vga_o[17:16];
+	wire [1:0] vga_g  = vgas_en ? vgas_o[9:8]   : rtg_scanout_active ? rtgs_o[9:8]   : VGA_DISABLE ? 2'd0 : vga_o[9:8];
+	wire [1:0] vga_b  = vgas_en ? vgas_o[1:0]   : rtg_scanout_active ? rtgs_o[1:0]   : VGA_DISABLE ? 2'd0 : vga_o[1:0];
 `endif
 
 reg video_sync = 0;
@@ -1958,6 +1993,10 @@ wire [13:0] fb_stride;
 		wire [23:0] fb_pal_d;
 		wire [23:0] fb_pal_q;
 		wire        fb_pal_wr;
+		// RTG pointer sprite write bus (fb_pal_clk domain)
+		wire        fb_spr_wr;
+		wire  [8:0] fb_spr_a;
+		wire [15:0] fb_spr_d;
 	`endif
 	wire   fb_force_blank;
 `else
@@ -2020,6 +2059,9 @@ emu emu
 	.FB_PAL_DOUT(fb_pal_d),
 	.FB_PAL_DIN (fb_pal_q),
 	.FB_PAL_WR  (fb_pal_wr),
+	.FB_SPRITE_WR  (fb_spr_wr),
+	.FB_SPRITE_ADDR(fb_spr_a),
+	.FB_SPRITE_DOUT(fb_spr_d),
 `endif
 
 `endif
@@ -2036,16 +2078,17 @@ emu emu
 
 	.ADC_BUS({ADC_SCK,ADC_SDO,ADC_SDI,ADC_CONVST}),
 
-	.DDRAM_CLK(ram_clk),
-	.DDRAM_ADDR(ram_address),
-	.DDRAM_BURSTCNT(ram_burstcount),
-	.DDRAM_BUSY(ram_waitrequest),
-	.DDRAM_DOUT(ram_readdata),
-	.DDRAM_DOUT_READY(ram_readdatavalid),
-	.DDRAM_RD(ram_read),
-	.DDRAM_DIN(ram_writedata),
-	.DDRAM_BE(ram_byteenable),
-	.DDRAM_WE(ram_write),
+	// unused by the core: ram_* belongs to the RTG scanout reader
+	.DDRAM_CLK(),
+	.DDRAM_ADDR(),
+	.DDRAM_BURSTCNT(),
+	.DDRAM_BUSY(1'b0),
+	.DDRAM_DOUT(64'd0),
+	.DDRAM_DOUT_READY(1'b0),
+	.DDRAM_RD(),
+	.DDRAM_DIN(),
+	.DDRAM_BE(),
+	.DDRAM_WE(),
 
 	.SDRAM_DQ(SDRAM_DQ),
 	.SDRAM_A(SDRAM_A),
@@ -2108,6 +2151,7 @@ emu emu
 	.h2f_bvalid (seam_h2f_bvalid),
 	.h2f_bready (seam_h2f_bready),
 	.h2f_araddr (seam_h2f_araddr),
+	.h2f_arsize (seam_h2f_arsize),
 	.h2f_arprot (seam_h2f_arprot),
 	.h2f_arvalid(seam_h2f_arvalid),
 	.h2f_arready(seam_h2f_arready),
@@ -2117,6 +2161,226 @@ emu emu
 	.h2f_rready (seam_h2f_rready)
 `endif
 );
+
+// RTG mouse pointer on the HDMI output, under the OSD (same $B80C00 feed as the analog overlay)
+`ifndef MISTER_DEBUG_NOHDMI
+`ifdef MISTER_FB_PALETTE
+rtg_hdmi_osd_sprite u_rtg_hdmi_osd_sprite
+(
+	.wr_clk    (fb_pal_clk),
+	.wr        (fb_spr_wr),
+	.waddr     (fb_spr_a),
+	.wdata     (fb_spr_d),
+	.clk_sys   (clk_sys),     // position mapping runs in the slow domain
+	.clk_video (clk_hdmi),
+	.ce        (scaler_out),
+	.rst       (reset),
+	.din       (hdmi_data_mask),
+	.de_in     (hdmi_de_mask),
+	.hs_in     (hdmi_hs_mask),
+	.vs_in     (hdmi_vs_mask),
+	.dout      (hdmi_data_spr),
+	.de_out    (hdmi_de_spr),
+	.hs_out    (hdmi_hs_spr),
+	.vs_out    (hdmi_vs_spr),
+	.hmin      (hmin),
+	.hmax      (hmax),
+	.vmin      (vmin),
+	.vmax      (vmax),
+	.fb_width  (FB_WIDTH),
+	.fb_height (FB_HEIGHT),
+	.rtg_en    (RTG_EN)      // only while RTG is the displayed source
+);
+`else
+// no sprite feed: pass the scaled video through
+assign {hdmi_data_spr, hdmi_de_spr, hdmi_hs_spr, hdmi_vs_spr} =
+       {hdmi_data_mask, hdmi_de_mask, hdmi_hs_mask, hdmi_vs_mask};
+`endif
+`endif
+
+// native-rate RTG analog scanout: a ram1 (f2h_sdram1) reader on clk_100m, the raster on clk_vid + clock-enable
+assign ram_clk = clk_100m;
+
+wire [1:0] rtg_cmode  = (RTG_FMT[2:0]==3'b011) ? 2'd0 :   // 8bpp CLUT
+                        (RTG_FMT[2:0]==3'b100) ? 2'd1 :   // 16bpp
+                        2'd2;                             // 24/32bpp
+wire [1:0] rtg_bpp_l2 = (RTG_FMT[2:0]==3'b011) ? 2'd0 :   // log2 bytes/pixel
+                        (RTG_FMT[2:0]==3'b100) ? 2'd1 : 2'd2;
+wire       rtg_1555   = RTG_FMT[3];
+wire       rtg_swap   = RTG_FMT[5];                  // byte swap, 16bpp only
+wire       rtg_fmt_ok = (RTG_FMT[2:0] != 3'b101);      // packed 24bpp is not supported
+
+// rasters: 15.625 kHz / 50 Hz up to 360x288, VGA 640x480@60 otherwise
+localparam [11:0] RTG_LO_HTOTAL = 12'd459, RTG_LO_HSW = 12'd34,  RTG_LO_HBP = 12'd41;
+localparam [11:0] RTG_LO_VTOTAL = 12'd312, RTG_LO_VSW = 12'd3;
+localparam [11:0] RTG_LO_HMAX   = 12'd360, RTG_LO_VMAX = 12'd288;
+localparam [11:0] RTG_HI_HTOTAL = 12'd912, RTG_HI_HSW = 12'd110, RTG_HI_HBP = 12'd55;
+localparam [11:0] RTG_HI_VTOTAL = 12'd525, RTG_HI_VSW = 12'd2;
+localparam [11:0] RTG_HI_HMAX   = 12'd640, RTG_HI_VMAX = 12'd480;
+
+wire rtg_lores = (RTG_WIDTH <= RTG_LO_HMAX) && (RTG_HEIGHT <= RTG_LO_VMAX);
+
+reg  [11:0] rtg_w_v  = 12'd0;
+reg  [11:0] rtg_h_v  = 12'd0;
+reg         rtg_lo_v = 1'b0;
+always @(posedge clk_vid) begin
+	rtg_w_v  <= RTG_WIDTH;
+	rtg_h_v  <= RTG_HEIGHT;
+	rtg_lo_v <= rtg_lores;
+end
+
+wire [11:0] rtg_htotal_c = rtg_lo_v ? RTG_LO_HTOTAL : RTG_HI_HTOTAL;
+wire [11:0] rtg_hsw      = rtg_lo_v ? RTG_LO_HSW    : RTG_HI_HSW;
+wire [11:0] rtg_hbp      = rtg_lo_v ? RTG_LO_HBP    : RTG_HI_HBP;
+wire [11:0] rtg_vtotal_c = rtg_lo_v ? RTG_LO_VTOTAL : RTG_HI_VTOTAL;
+wire [11:0] rtg_vsw      = rtg_lo_v ? RTG_LO_VSW    : RTG_HI_VSW;
+wire [11:0] rtg_hmax     = rtg_lo_v ? RTG_LO_HMAX   : RTG_HI_HMAX;
+wire [11:0] rtg_vmax     = rtg_lo_v ? RTG_LO_VMAX   : RTG_HI_VMAX;
+
+wire [11:0] rtg_hact_c = ((rtg_w_v == 12'd0) || (rtg_w_v > rtg_hmax)) ? rtg_hmax : rtg_w_v;
+wire [11:0] rtg_vact_c = ((rtg_h_v == 12'd0) || (rtg_h_v > rtg_vmax)) ? rtg_vmax : rtg_h_v;
+
+wire [11:0] rtg_vfp_c  = (rtg_vtotal_c - rtg_vact_c - rtg_vsw) >> 1;  // centred vertically
+
+reg [11:0] rtg_htotal   = RTG_HI_HTOTAL;
+reg [11:0] rtg_vtotal   = RTG_HI_VTOTAL;
+reg [11:0] rtg_hact     = 12'd0;
+reg [11:0] rtg_vact     = 12'd0;
+reg [11:0] rtg_hs_start = RTG_HI_HTOTAL;
+reg [11:0] rtg_hs_end   = RTG_HI_HTOTAL;
+reg [11:0] rtg_vs_start = RTG_HI_VTOTAL;
+reg [11:0] rtg_vs_end   = RTG_HI_VTOTAL;
+always @(posedge clk_vid) begin
+	rtg_htotal   <= rtg_htotal_c;
+	rtg_vtotal   <= rtg_vtotal_c;
+	rtg_hact     <= rtg_hact_c;
+	rtg_vact     <= rtg_vact_c;
+	rtg_hs_end   <= rtg_htotal_c - rtg_hbp;            // fixed standard back porch
+	rtg_hs_start <= rtg_htotal_c - rtg_hbp - rtg_hsw;
+	rtg_vs_start <= rtg_vact_c + rtg_vfp_c;
+	rtg_vs_end   <= rtg_vact_c + rtg_vfp_c + rtg_vsw;
+end
+
+// pixel clock-enable: clk_vid/16 or clk_vid/4
+wire [4:0] rtg_ce_div = rtg_lo_v ? 5'd16 : 5'd4;
+reg  [4:0] rtg_ce_cnt = 5'd0;
+reg        rtg_ce     = 1'b0;
+always @(posedge clk_vid) begin
+	if (rtg_ce_cnt >= (rtg_ce_div - 5'd1)) begin rtg_ce_cnt <= 5'd0;              rtg_ce <= 1'b1; end
+	else                                   begin rtg_ce_cnt <= rtg_ce_cnt + 5'd1; rtg_ce <= 1'b0; end
+end
+
+reg rtg_rst1 = 1'b1, rtg_rst2 = 1'b1;
+always @(posedge clk_vid) begin
+	rtg_rst1 <= reset;
+	rtg_rst2 <= rtg_rst1;
+end
+wire rst_rtgpix = rtg_rst2;
+
+wire         rtg_lb_we;
+wire   [9:0] rtg_lb_waddr;    // {bank, word[8:0]} (LB_AW=9)
+wire  [63:0] rtg_lb_wdata;
+wire         rtg_frame_tgl, rtg_line_tgl;
+
+wire [23:0] sc_rgb;
+wire        sc_hs, sc_vs, sc_de, sc_cs;
+
+rtg_ddr_reader #(.LB_AW(9), .MAX_BURST(8'd16)) u_rtg_reader
+(
+	.clk              (clk_100m),
+	.rst              (reset),
+	.enable           (rtg_scanout_active),
+	.fb_base          (RTG_BASE),
+	.fb_stride        (RTG_STRIDE),
+	.fb_width         (RTG_WIDTH),
+	.fb_height        (RTG_HEIGHT),
+	.fb_bpp_l2        (rtg_bpp_l2),
+	.px_frame_tgl     (rtg_frame_tgl),
+	.px_line_tgl      (rtg_line_tgl),
+	.avl_address      (ram_address),
+	.avl_burstcount   (ram_burstcount),
+	.avl_read         (ram_read),
+	.avl_waitrequest  (ram_waitrequest),
+	.avl_readdata     (ram_readdata),
+	.avl_readdatavalid(ram_readdatavalid),
+	.avl_writedata    (ram_writedata),
+	.avl_byteenable   (ram_byteenable),
+	.avl_write        (ram_write),
+	.lb_we            (rtg_lb_we),
+	.lb_waddr         (rtg_lb_waddr),
+	.lb_wdata         (rtg_lb_wdata)
+);
+
+rtg_scanout #(.LB_AW(9), .HTOTAL0(RTG_HI_HTOTAL), .VTOTAL0(RTG_HI_VTOTAL)) u_rtg_scanout
+(
+	.clk       (clk_vid),
+	.rst       (rst_rtgpix),
+	.ce        (rtg_ce),
+	.htotal    (rtg_htotal), .hact(rtg_hact), .hs_start(rtg_hs_start), .hs_end(rtg_hs_end),
+	.vtotal    (rtg_vtotal), .vact(rtg_vact), .vs_start(rtg_vs_start), .vs_end(rtg_vs_end),
+	.hs_pol    (1'b0),  .vs_pol(1'b0),     // neg H/V sync (inverted at pin, like native)
+	.cmode     (rtg_cmode),
+	.fmt_1555  (rtg_1555),
+	.fmt_swap  (rtg_swap),
+	.lb_wclk   (clk_100m),
+	.lb_we     (rtg_lb_we),
+	.lb_waddr  (rtg_lb_waddr),
+	.lb_wdata  (rtg_lb_wdata),
+	.pal_clk   (fb_pal_clk),
+	.pal_wr    (fb_pal_wr),
+	.pal_a     (fb_pal_a),
+	.pal_d     (fb_pal_d),
+	.spr_wclk  (fb_pal_clk),
+	.spr_wr    (fb_spr_wr),
+	.spr_waddr (fb_spr_a),
+	.spr_wdata (fb_spr_d),
+	.rgb       (sc_rgb),
+	.hs        (sc_hs),
+	.vs        (sc_vs),
+	.de        (sc_de),
+	.frame_tgl (rtg_frame_tgl),
+	.line_tgl  (rtg_line_tgl)
+);
+
+// OSD over the RTG analog output; osd_status is driven by vga_osd
+wire [23:0] rtgo_rgb;
+wire        rtgo_hs, rtgo_vs, rtgo_de;
+osd rtg_osd
+(
+	.clk_sys   (clk_sys),
+	.io_osd    (io_osd_vga),
+	.io_strobe (io_strobe),
+	.io_din    (io_din),
+	.osd_status(),
+	.clk_video (clk_vid),
+	.din       (sc_rgb),
+	.hs_in     (sc_hs),
+	.vs_in     (sc_vs),
+	.de_in     (sc_de),
+	.dout      (rtgo_rgb),
+	.hs_out    (rtgo_hs),
+	.vs_out    (rtgo_vs),
+	.de_out    (rtgo_de)
+);
+
+// sync and DAC output stage, as on the native path
+csync csync_rtg(clk_vid, rtgo_hs, rtgo_vs, sc_cs);
+vga_out u_rtgs_vgaout
+(
+	.clk      (clk_vid),
+	.ypbpr_en (ypbpr_en),
+	.hsync    (rtgo_hs),
+	.vsync    (rtgo_vs),
+	.csync    (sc_cs),
+	.de       (rtgo_de),
+	.din      (rtgo_rgb),
+	.dout     (rtgs_o),
+	.hsync_o  (rtgs_hs),
+	.vsync_o  (rtgs_vs),
+	.csync_o  (rtgs_cs),
+	.de_o     (rtgs_de)
+);
+
 
 endmodule
 

@@ -223,7 +223,6 @@ set_global_assignment -name QIP_FILE rtl/cia.qip
 set_global_assignment -name QIP_FILE rtl/gayle.qip
 set_global_assignment -name QIP_FILE rtl/paula.qip
 set_global_assignment -name QIP_FILE rtl/denise.qip
-set_global_assignment -name QIP_FILE "rtl/fpga-toccata/toccata.qip"
 set_global_assignment -name VERILOG_FILE rtl/gary.v
 set_global_assignment -name VERILOG_FILE rtl/chip_write_retry.v
 set_global_assignment -name VERILOG_FILE rtl/rtg.v

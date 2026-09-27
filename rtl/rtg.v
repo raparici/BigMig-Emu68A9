@@ -30,6 +30,9 @@
 
 // B80400..B807FF CLUT : 256 * 32bits 00 / RR / GG / BB
 
+// B80C00..B80FFF pointer sprite, write-only words: 0..191 image, 192..197 colours 1..3,
+//                198 X, 199 Y, 200 enable
+
 module rtg
 (
 	input             clk,           // clock
@@ -53,13 +56,18 @@ module rtg
 	output     [23:0] pal_dw,
 	input      [23:0] pal_dr,
 	output     [7:0]  pal_a,
-	output            pal_wr
+	output            pal_wr,
+	// pointer sprite write bus
+	output     [8:0]  spr_a,
+	output     [15:0] spr_d,
+	output            spr_wr
 );
 
 reg [23:0] rpal;
 
 wire r_en  = aen && (rs[11:4]  == 'h10);
 wire r_pal = aen && (rs[11:10] == 1);
+wire r_spr = aen && (rs[11:10] == 2'b11);
 
 // writing of output port
 always @(posedge clk) begin
@@ -108,6 +116,10 @@ wire rd_ready = r_pal ? rd_r[2] : rd_r[0];
 assign pal_clk  = clk;
 assign pal_a    = rs[9:2];
 assign pal_wr   = wr & r_pal;
+
+assign spr_wr   = wr & r_spr;
+assign spr_a    = rs[9:1];
+assign spr_d    = data_in;
 assign pal_dw   = rs[1] ? {rpal[23:16],data_in} : {data_in[7:0],rpal[15:0]};
 
 assign data_out = aen ? dout : 16'h0000;

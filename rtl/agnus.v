@@ -95,7 +95,8 @@ module agnus
 	input         a1k,             // enable A1000 OCS features
 	input         ecs,             // enable ECS features
 	input         aga,             // enables AGA features
-	input         floppy_speed     // allocates refresh slots for disk DMA
+	input         floppy_speed,    // allocates refresh slots for disk DMA
+	output        blit_busy_o      // blitter busy, for the seam
 );
 
 //register names and adresses
@@ -485,5 +486,6 @@ assign strhor_paula = hpos==(6*2+1) ? 1'b1 : 1'b0; //hack
 //--------------------------------------------------------------------------------------
 
 
-endmodule
+assign blit_busy_o = blit_busy;
 
+endmodule

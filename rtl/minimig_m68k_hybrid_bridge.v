@@ -59,6 +59,7 @@ module minimig_m68k_hybrid_bridge
 	// Completion is SDRAM commit, not just arbitration.
 	input             ovl,            // minimig.chip_ovl: Kickstart overlay active
 	input       [1:0] chip_memcfg,    // memory_config[1:0]: chip-RAM size (block mirroring)
+	input             blit_busy,      // blitter busy: paces Via-B launches during a blit
 	output reg [24:1] cp_addr,        // -> sdram_ctrl.cpuAddr (post-mirroring, chip space)
 	output reg        cp_cs,          // -> sdram_ctrl.cpuCS (armed one clk AFTER the payload)
 	output reg  [1:0] cp_state,       // -> sdram_ctrl.cpustate (01 idle, 10 read, 11 write)
@@ -101,8 +102,8 @@ module minimig_m68k_hybrid_bridge
 		ph2n <= ph2;
 	end
 
-	// chip-bus cycle generator on the negedge: 0 idle/drive strobes, 1 settle, 2 latch + DTACK, 3 recovery; Via-B adds 4..7 for the CPU-port path
-	localparam [3:0] VB_REQ = 4'd4, VB_DRAIN = 4'd5, VB_DONE = 4'd6, VB_CAP = 4'd7,
+	// chip-bus cycle generator on the negedge: 0 idle/drive strobes, 1 settle, 2 latch + DTACK, 3 recovery; Via-B adds 4, 5, 7, 8 for the CPU-port path
+	localparam [3:0] VB_REQ = 4'd4, VB_DRAIN = 4'd5, VB_CAP = 4'd7,
 	                 VB_LW2 = 4'd8;
 	reg  [3:0] stage;
 	reg        waitm;      // DTACK sampled on phase-2 (active-low: 0 = acked)
@@ -122,6 +123,9 @@ module minimig_m68k_hybrid_bridge
 	reg        vb_wr;      // VIA-B: launched cycle is a write (drain applies)
 	reg        vb_lw;      // LW-FUSE: this Via-B READ serves both halves in one transaction
 	reg        vb_second;  // ...and we are on the second half (A+2)
+	// while a blit runs, Via-B launches are spaced BLITFAIR_CCK clk_sys apart (about one chip cycle)
+	localparam [4:0] BLITFAIR_CCK = 5'd16;
+	reg  [4:0] vb_throttle = 5'd0;
 	reg [15:0] vb_to;      // VIA-B watchdog: clk cycles waiting on the CPU port.
 	// 65536 x ~35 ns ~= 2.3 ms -- far above any legal wait, so the watchdog only fires
 	// on a real hang.
@@ -180,6 +184,7 @@ module minimig_m68k_hybrid_bridge
 			vb_to      <= 16'd0;
 			vb_lw      <= 1'b0;
 			vb_second  <= 1'b0;
+			vb_throttle<= 5'd0;
 			ext_readdata_hi <= 16'd0;
 			ext_lw_done     <= 1'b0;
 		end
@@ -202,6 +207,7 @@ module minimig_m68k_hybrid_bridge
 			vb_to      <= 16'd0;
 			vb_lw      <= 1'b0;
 			vb_second  <= 1'b0;
+			vb_throttle<= 5'd0;
 			ext_lw_done<= 1'b0;
 		end
 		else begin
@@ -209,13 +215,14 @@ module minimig_m68k_hybrid_bridge
 			if (ph2n) waitm <= chip_dtack;
 
 			complete_p <= 1'b0;
-			if (ph1n) begin
+			// a Via-B request launches on any negedge; the chip-bus branch keeps the ph1 gate
+			if (ph1n || (stage == 4'd0 && busy && vb_sel)) begin
 				complete_p <= ready;
 				ready      <= 1'b0;
 				case (stage)
 				// Launch off the PERSISTENT busy latch, not the request edge: the edge can
 				// arrive between ph1 pulses.
-					3'd0: if (busy) begin
+					3'd0: if (busy && !(vb_sel && blit_busy && vb_throttle != 5'd0)) begin
 							// launch -- and LATCH the payload: from here to
 							// completion the cycle uses ONLY the *_r copies;
 							// upstream xa_* changes cannot touch it.
@@ -247,6 +254,7 @@ module minimig_m68k_hybrid_bridge
 					// chip-bus longword still takes two requests.
 								vb_lw    <= ext_longword & ~ext_write;
 								vb_second<= 1'b0;
+								vb_throttle <= blit_busy ? BLITFAIR_CCK : 5'd0;
 								stage    <= VB_REQ;
 							end
 							else begin
@@ -300,8 +308,15 @@ module minimig_m68k_hybrid_bridge
 				else if (cp_ramready) begin
 					if (vb_wr) begin
 						cp_cs    <= 1'b0;       // write accepted -> drain wait
-						cp_state <= 2'b01;      // (or straight to DONE when posted)
-						stage    <= viab_posted ? VB_DONE : VB_DRAIN;
+						cp_state <= 2'b01;      // (or complete right here when posted)
+						if (viab_posted) begin
+							complete_p <= 1'b1;
+							vb_lw      <= 1'b0;
+							vb_second  <= 1'b0;
+							stage      <= 4'd0;
+						end
+						else
+							stage    <= VB_DRAIN;
 					end
 					else begin
 						stage    <= VB_CAP;     // read: data captured NEXT clk
@@ -332,7 +347,14 @@ module minimig_m68k_hybrid_bridge
 				else begin
 					cp_state   <= 2'b01;             // release the port for real
 					chipdout_i <= cp_rdata;
-					stage      <= VB_DONE;
+					// LW-FUSE reported ONLY here, and only if both halves actually ran.
+					// Every force-completion path leaves it 0, so a watchdog
+					// give-up can never tell seam_engine it already has the high word.
+					complete_p  <= 1'b1;
+					ext_lw_done <= vb_lw & vb_second;
+					vb_lw       <= 1'b0;
+					vb_second   <= 1'b0;
+					stage       <= 4'd0;
 				end
 			end
 			else if (stage == VB_LW2) begin
@@ -345,23 +367,20 @@ module minimig_m68k_hybrid_bridge
 				// committed to the SDRAM array (write_busy low). Normally 1-2
 				// clk114 after accept; bounded by the same watchdog.
 				vb_to <= vb_to + 1'b1;
-				if (~cp_write_busy) stage <= VB_DONE;
+				if (~cp_write_busy) begin
+					complete_p <= 1'b1;
+					vb_lw      <= 1'b0;
+					vb_second  <= 1'b0;
+					stage      <= 4'd0;
+				end
 				else if (&vb_to) begin
 					cerr       <= 1'b1;
 					complete_p <= 1'b1;
 					stage      <= 4'd0;
 				end
 			end
-			else if (stage == VB_DONE) begin
-				complete_p  <= 1'b1;            // one-clk pulse (posedge consumes)
-				// LW-FUSE reported ONLY here, and only if both halves actually ran.
-				// Every force-completion path below/above leaves it 0, so a watchdog
-				// give-up can never tell seam_engine it already has the high word.
-				ext_lw_done <= vb_lw & vb_second;
-				vb_lw       <= 1'b0;
-				vb_second   <= 1'b0;
-				stage       <= 4'd0;
-			end
+			// blit pacing countdown, reloaded at each Via-B launch
+			if (vb_throttle != 5'd0) vb_throttle <= vb_throttle - 5'd1;
 
 			// Phase-freeze watchdog: a minimig CPU reset freezes ph1/ph2 mid-cycle, and
 			// everything above is ph1n-gated, so the cycle would wedge with busy=1 and never

@@ -48,12 +48,13 @@ module axi_seam_slave
 	input                                  S_AXI_BREADY,
 
 	input      [C_S_AXI_ADDR_WIDTH-1:0]    S_AXI_ARADDR,
+	input      [2:0]                       S_AXI_ARSIZE,   // 0 byte, 1 word, 2 longword (chip-RAM window)
 	input      [2:0]                       S_AXI_ARPROT,
 	input                                  S_AXI_ARVALID,
 	output                                 S_AXI_ARREADY,
 
 	output reg [C_S_AXI_DATA_WIDTH-1:0]    S_AXI_RDATA,
-	output     [1:0]                       S_AXI_RRESP,
+	output reg [1:0]                       S_AXI_RRESP,
 	output                                 S_AXI_RVALID,
 	input                                  S_AXI_RREADY,
 
@@ -76,6 +77,7 @@ module axi_seam_slave
 
 	// IPL / reset readback inputs (from Paula / minimig, 28 MHz domain)
 	input  [2:0]  ipl_n,          // Paula IPL, active-low
+	input         blt_busy,       // blitter busy -> REG_IPL bit4
 	input         cpu_reset_n,   //  m68k reset_n (wire to minimig cpu_rst)
 
 	// control-plane outputs
@@ -111,8 +113,12 @@ module axi_seam_slave
 	reg  axi_awready, axi_wready, axi_bvalid;
 	reg  [C_S_AXI_ADDR_WIDTH-1:0] axi_awaddr;
 
+	// writes wait while a window read owns the engine, so it never sees two writers
+	wire win_ar_present;
+	wire win_owner;
 	wire write_accept = ~axi_awready & S_AXI_AWVALID & S_AXI_WVALID
-	                    & (~axi_bvalid | S_AXI_BREADY);
+	                    & (~axi_bvalid | S_AXI_BREADY)
+	                    & ~win_owner & ~win_ar_present;
 
 	always @(posedge S_AXI_ACLK) begin
 		if (~S_AXI_ARESETN) begin
@@ -239,6 +245,20 @@ module axi_seam_slave
 	reg  blk_pending;   // a blocking OFF_RESULT read is waiting for aa_busy to clear
 	reg  [10:0] blk_to;   //  bounded-hold countdown while blk_pending
 
+	// chip-RAM window, offsets 0x0800000-0x09FFFFF: a read becomes a seam request, R waits for it, SLVERR on timeout
+	localparam [3:0] WIN_HI = 4'b0100;          // araddr[24:21] of the window
+	localparam [2:0] W_IDLE = 3'd0, W_ADDR = 3'd1, W_CTRL = 3'd2, W_SETTLE = 3'd3, W_PARK = 3'd4;
+	reg  [2:0]  win_st = W_IDLE;
+	reg         win_write = 1'b0;
+	reg  [2:0]  win_sel   = 3'd0;
+	reg  [31:0] win_wdata = 32'd0;
+	reg  [2:0]  win_size  = 3'd0;
+	reg  [7:0]  win_cnt   = 8'd0;               // window retirements, subtracted from DONE
+	wire        win_hit_ar = (S_AXI_ARADDR[24:21] == WIN_HI);
+	assign win_ar_present = S_AXI_ARVALID & win_hit_ar & ~axi_arready & ~axi_rvalid & ~blk_pending;
+	assign win_owner      = (win_st != W_IDLE);
+	wire [7:0]  done_seen;                      // DONE net of the window's retirements
+
 	// read-data sources from the register blocks
 	wire [15:0] aa_rdata;      // primary/low word (single-word result, or longword A+2)
 	wire [15:0] aa_rdata_hi;   //  longword high word (addr A); 0 when LONGWORD_EN=0
@@ -246,6 +266,7 @@ module axi_seam_slave
 	wire        aa_full;   //  request FIFO cannot accept another trigger
 	wire        aa_ovf;       // sticky: a trigger was REFUSED (a chip cycle was lost)
 	wire [7:0]  aa_done_cnt;  // retired transactions -- lets the firmware drop the prime read
+	assign done_seen = aa_done_cnt - win_cnt;
 	// Quasi-static by construction: lat_bus only changes when a transaction completes, and the
 	// firmware reads it once the engine is idle, so a plain 2-FF sync is enough -- there is no
 	// moment where a reader can catch it mid-update.  Diagnostic only; nothing steers on it.
@@ -270,25 +291,49 @@ module axi_seam_slave
 			S_AXI_RDATA <= {C_S_AXI_DATA_WIDTH{1'b0}};
 			blk_pending <= 1'b0;
 			blk_to      <= 11'd0;
+			S_AXI_RRESP <= 2'b00;
+			win_st      <= W_IDLE;
+			win_write   <= 1'b0;
+			win_cnt     <= 8'd0;
 		end else begin
-			// gate a new address accept while a blocking read is parked (single outstanding)
-			if (~axi_arready & S_AXI_ARVALID & ~axi_rvalid & ~blk_pending) begin
+			// gate a new address accept while a blocking read is parked (single outstanding);
+			// a window read also needs the engine idle and no register write landing
+			if (~axi_arready & S_AXI_ARVALID & ~axi_rvalid & ~blk_pending & ~win_owner &
+			    (~win_hit_ar | (~aa_busy & ~soft_rst & ~axi_awready & ~write_accept))) begin
 				axi_arready <= 1'b1;
 				axi_araddr  <= S_AXI_ARADDR;
+				win_size    <= S_AXI_ARSIZE;
 			end else begin
 				axi_arready <= 1'b0;
 			end
 
+			// window request: REG_ADDR, then REG_CTRL (read, both byteenables, longword iff size 2)
+			win_write <= 1'b0;
+			case (win_st)
+				W_ADDR:   begin win_write <= 1'b1; win_sel <= 3'd2;
+				                win_wdata <= {27'd0, (win_size == 3'd2) ? 5'b11101 : 5'b01101};
+				                win_st <= W_CTRL; end
+				W_CTRL:   win_st <= W_SETTLE;
+				W_SETTLE: begin win_st <= W_PARK; blk_to <= 11'd0; end
+				default:  ;
+			endcase
+
 			if (axi_arready) begin
+				if ((axi_araddr[24:21] == WIN_HI) && (LONGWORD_EN == 1 || win_size != 3'd2)) begin
+					win_write <= 1'b1; win_sel <= 3'd0;
+					win_wdata <= {12'd0, axi_araddr[20:1]};
+					win_st    <= W_ADDR;
+				end else
 				if (SEAM_BLOCKING_READ & (axi_araddr[24:0] == OFF_RESULT) & aa_busy) begin
 					// cycle still in flight -> PARK: hold RVALID low until it completes
 					blk_pending <= 1'b1;
 					blk_to      <= 11'd0;
 				end else begin
-					axi_rvalid <= 1'b1;
+					axi_rvalid  <= 1'b1;
+					S_AXI_RRESP <= 2'b00;
 					case (axi_araddr[24:0])
 						// folded result: busy(31) + cerr(30) + data[15:0] in one beat
-						OFF_RESULT  : S_AXI_RDATA <= {aa_busy, cerr_axi, aa_full, aa_ovf, 4'd0, aa_done_cnt, aa_rdata};
+						OFF_RESULT  : S_AXI_RDATA <= {aa_busy, cerr_axi, aa_full, aa_ovf, 4'd0, done_seen, aa_rdata};
 	// ⚠ bit3 FULL is load-bearing: the firmware gates its pushes on it, and a refused
 	// trigger is a lost chip cycle.
 						OFF_STATUS  : S_AXI_RDATA <= {28'd0, aa_full, 1'd0, cerr_axi, aa_busy};
@@ -308,8 +353,25 @@ module axi_seam_slave
 				blk_to <= blk_to + 11'd1;
 				if (~aa_busy || (blk_to == BLK_TIMEOUT) || srst_lvl) begin
 					axi_rvalid  <= 1'b1;
-					S_AXI_RDATA <= {aa_busy, cerr_axi, aa_full, aa_ovf, 4'd0, aa_done_cnt, aa_rdata};
+					S_AXI_RRESP <= 2'b00;
+					S_AXI_RDATA <= {aa_busy, cerr_axi, aa_full, aa_ovf, 4'd0, done_seen, aa_rdata};
 					blk_pending <= 1'b0;
+					blk_to      <= 11'd0;
+				end
+			end else if (win_st == W_PARK) begin
+				// window read: the first retirement is ours; same bound and releases as the park above
+				blk_to <= blk_to + 11'd1;
+				if (~aa_busy || (blk_to == BLK_TIMEOUT) || srst_lvl) begin
+					axi_rvalid  <= 1'b1;
+					S_AXI_RRESP <= aa_busy ? 2'b10 : 2'b00;         // SLVERR if released unretired
+					win_cnt     <= win_cnt + 8'd1;
+					case (win_size)
+						3'd2:    S_AXI_RDATA <= {aa_rdata[7:0], aa_rdata[15:8], aa_rdata_hi[7:0], aa_rdata_hi[15:8]};
+						3'd1:    S_AXI_RDATA <= axi_araddr[1] ? {aa_rdata[7:0], aa_rdata[15:8], 16'h0000}
+						                                      : {16'h0000, aa_rdata[7:0], aa_rdata[15:8]};
+						default: S_AXI_RDATA <= axi_araddr[0] ? {4{aa_rdata[7:0]}} : {4{aa_rdata[15:8]}};
+					endcase
+					win_st      <= W_IDLE;
 					blk_to      <= 11'd0;
 				end
 			end else if (axi_rvalid & S_AXI_RREADY) begin
@@ -320,7 +382,6 @@ module axi_seam_slave
 
 	assign S_AXI_ARREADY = axi_arready;
 	assign S_AXI_RVALID  = axi_rvalid;
-	assign S_AXI_RRESP   = 2'b00; // OKAY
 
 	// ================================================================== //
 	// Register blocks (mixed-language: Verilog instantiating VHDL)       //
@@ -330,9 +391,9 @@ module axi_seam_slave
 		.clk             (S_AXI_ACLK),
 		.reset_n         (S_AXI_ARESETN),
 		.soft_rst        (soft_rst),   //  OVL[1] resets the WHOLE seam
-		.reg_write       (aa_write),
-		.reg_sel         (aa_sel),
-		.reg_wdata       (S_AXI_WDATA),
+		.reg_write       (aa_write | win_write),   // the window pushes too
+		.reg_sel         (win_write ? win_sel   : aa_sel),
+		.reg_wdata       (win_write ? win_wdata : S_AXI_WDATA),
 		.rdata           (aa_rdata),
 		.rdata_hi        (aa_rdata_hi),
 		.status_busy     (aa_busy),
@@ -364,6 +425,7 @@ module axi_seam_slave
 		.epoch_gray    (epoch_gray),
 		.sync_clk      (sync_clk),
 		.ipl_n         (ipl_n),
+		.blt_busy      (blt_busy),
 		.chip_reset_n  (cpu_reset_n & ~chip_rst_req & ~extrst_lvl)   // extrst: stretch the EXTERNAL (OSD) reset so the firmware always catches bit3=0
 	);
 

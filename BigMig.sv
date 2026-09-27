@@ -348,6 +348,7 @@ localparam VIAB_EN = 1'b1;
 localparam VIAB_POSTED = 1'b1;
 localparam VIAB_CACHED = 1'b1;
 
+	wire chip_blit_busy;   // blitter busy (clk_sys), from minimig
 	axi_seam_slave #(.LONGWORD_EN(SEAM_LONGWORD_EN), .REQFIFO_LOG2(SEAM_REQFIFO_LOG2)) u_axi_seam_slave
 	(
 		.S_AXI_ACLK    (h2f_aclk    ),
@@ -364,6 +365,7 @@ localparam VIAB_CACHED = 1'b1;
 		.S_AXI_BVALID  (h2f_bvalid  ),
 		.S_AXI_BREADY  (h2f_bready  ),
 		.S_AXI_ARADDR  (h2f_araddr  ),
+		.S_AXI_ARSIZE  (h2f_arsize  ),
 		.S_AXI_ARPROT  (h2f_arprot  ),
 		.S_AXI_ARVALID (h2f_arvalid ),
 		.S_AXI_ARREADY (h2f_arready ),
@@ -387,6 +389,7 @@ localparam VIAB_CACHED = 1'b1;
 		.hyb_cerr      (hyb_cerr       ),  // sticky DTACK-timeout -> REG_STATUS bit1
 
 		.ipl_n         (chip_ipl       ),  // Paula IPL (active-low), from minimig
+		.blt_busy      (chip_blit_busy ),  // blitter busy -> REG_IPL bit4
 		// REG_IPL bit3 must follow the real chipset reset, not the parked wrapper's nResetOut
 		.cpu_reset_n   (cpu_rst        ),  // m68k reset_n readback (active-low)
 
@@ -433,6 +436,7 @@ localparam VIAB_CACHED = 1'b1;
 		.viab_posted   (VIAB_POSTED    ),
 		.ovl           (minimig_ovl    ),
 		.chip_memcfg   (memcfg[1:0]    ),
+		.blit_busy     (chip_blit_busy ),  // pace Via-B chip-RAM accesses while a blit runs
 		.cp_addr       (hb_cp_addr     ),
 		.cp_cs         (hb_cp_cs       ),
 		.cp_state      (hb_cp_state    ),
@@ -526,9 +530,21 @@ wire        ram1_cpu_u     = hb_cp_u;
 wire        ram1_cpu_l     = hb_cp_l;
 wire  [1:0] ram1_cpu_state = hb_cp_state;
 wire        ram1_cpu_cs    = hb_cp_cs;
-wire        ram1_cache_inh = ~VIAB_CACHED;   //  cached (snoop-coherent)
-// cache policy is the design's, not the OSD cacr: enable bit only
-wire  [3:0] ram1_cacr      = {3'b000, VIAB_CACHED};
+// OSD DCache off (cachecfg[2]): no hits and no fills; the cache is cleared for a while after every flip
+reg  [1:0] dcache_off_sync = 2'b00;
+reg        dcache_off_d    = 1'b0;
+reg [10:0] dcache_clr_cnt  = 11'd0;
+always @(posedge clk_114) begin
+   dcache_off_sync <= {dcache_off_sync[0], cachecfg[2]};
+   dcache_off_d    <= dcache_off_sync[1];
+   if (reset_d)                                dcache_clr_cnt <= 11'd0;
+   else if (dcache_off_sync[1] ^ dcache_off_d) dcache_clr_cnt <= 11'h7FF; // flip: arm
+   else if (dcache_clr_cnt != 11'd0)           dcache_clr_cnt <= dcache_clr_cnt - 11'd1;
+end
+wire        dcache_off     = dcache_off_sync[1];
+wire        ram1_cache_inh = ~VIAB_CACHED | dcache_off;
+// cache policy is the design's, not the OSD cacr: [0] enable, [3] clear
+wire  [3:0] ram1_cacr      = {(dcache_clr_cnt != 11'd0), 2'b00, (VIAB_CACHED & ~dcache_off)};
 `else
 wire [24:1] ram1_cpu_addr  = {2'b00, ram_addr[22:1]};
 wire [15:0] ram1_cpu_wr    = ram_din;
@@ -656,6 +672,9 @@ fastchip fastchip
 	.rtg_pal_dr   (FB_PAL_DIN        ),
 	.rtg_pal_a    (FB_PAL_ADDR       ),
 	.rtg_pal_wr   (FB_PAL_WR         ),
+	.rtg_spr_a    (FB_SPRITE_ADDR    ),
+	.rtg_spr_d    (FB_SPRITE_DOUT    ),
+	.rtg_spr_wr   (FB_SPRITE_WR      ),
 
 	.ide_ena      (fc_ide_ena        ),   //  the same net the bridge gates fc_sel with
 	.ide_irq      (ide_f_irq         ),
@@ -861,7 +880,8 @@ minimig minimig
 	.ide_write    (ide_wr           ),
 	.ide_writedata(ide_dout         ),
 	.ide_read     (ide_rd           ),
-	.ide_readdata (ide_c_readdata   )
+	.ide_readdata (ide_c_readdata   ),
+	.blit_busy    (chip_blit_busy   )
 );
 
 // power led control
@@ -987,7 +1007,8 @@ always @(posedge CLK_VIDEO) begin
 	if(vs_d & ~vs) fb_en_vga <= fb_en_s;
 end
 
-assign VGA_DISABLE = fb_en_vga;
+// only RTG modes above 480 lines are blanked; the rest reach the analog output
+assign VGA_DISABLE = fb_en_vga & (FB_HEIGHT > 12'd480);
 
 wire [2:0] sl = fx ? fx - 1'd1 : 3'd0;
 assign VGA_SL = sl[1:0];

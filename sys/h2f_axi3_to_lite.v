@@ -55,7 +55,7 @@ module h2f_axi3_to_lite #(
 	input  wire [ID_WIDTH-1:0]         s_arid,
 	input  wire [H2F_ADDR_WIDTH-1:0]   s_araddr,
 	input  wire [3:0]                  s_arlen,     // ignored
-	input  wire [2:0]                  s_arsize,    // ignored
+	input  wire [2:0]                  s_arsize,    // -> m_arsize
 	input  wire [1:0]                  s_arburst,   // ignored
 	input  wire [1:0]                  s_arlock,    // ignored
 	input  wire [3:0]                  s_arcache,   // ignored
@@ -86,6 +86,7 @@ module h2f_axi3_to_lite #(
 	output wire                        m_bready,
 
 	output wire [LITE_ADDR_WIDTH-1:0]  m_araddr,
+	output wire [2:0]                  m_arsize,    // access size, for the chip-RAM window
 	output wire [2:0]                  m_arprot,
 	output wire                        m_arvalid,
 	input  wire                        m_arready,
@@ -108,6 +109,7 @@ module h2f_axi3_to_lite #(
 
 	// ---- read address: straight pass-through -------------------------------------
 	assign m_araddr  = s_araddr[LITE_ADDR_WIDTH-1:0];
+	assign m_arsize  = s_arsize;
 	assign m_arprot  = s_arprot;
 	assign m_arvalid = s_arvalid;
 	assign s_arready = m_arready;

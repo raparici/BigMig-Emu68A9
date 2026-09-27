@@ -196,7 +196,11 @@ always @(posedge clk_video) begin
 		if(de_in && !deD) begin
 			h_cnt <= 0;
 			v_cnt <= v_cnt + 1'd1;
-			h_osd_start <= info ? (rot[0] ? infoy : infox) : (((dsp_width - osd_w)>>1) - 2'd2);
+			// infox[11]: right-align the info window per instance, infox[10:0] = right margin
+			h_osd_start <= info ? (rot[0] ? infoy
+			                              : (infox[11] ? ((dsp_width > (osd_w + infox[10:0])) ? (dsp_width - osd_w - infox[10:0]) : 22'd0)
+			                                           : infox))
+			                    : (((dsp_width - osd_w)>>1) - 2'd2);
 
 			if(h_cnt > {dsp_width, 2'b00}) begin
 				v_cnt <= 1;

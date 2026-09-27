@@ -64,6 +64,11 @@ output  [7:0] FB_PAL_ADDR,
 output [23:0] FB_PAL_DOUT,
 input  [23:0] FB_PAL_DIN,
 output        FB_PAL_WR,
+
+// RTG pointer sprite write bus (FB_PAL_CLK domain)
+output        FB_SPRITE_WR,
+output  [8:0] FB_SPRITE_ADDR,
+output [15:0] FB_SPRITE_DOUT,
 `endif
 `endif
 
@@ -170,6 +175,7 @@ output  [1:0] h2f_bresp,
 output        h2f_bvalid,
 input         h2f_bready,
 input  [24:0] h2f_araddr,
+input   [2:0] h2f_arsize,   // access size, for the chip-RAM window
 input   [2:0] h2f_arprot,
 input         h2f_arvalid,
 output        h2f_arready,

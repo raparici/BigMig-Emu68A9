@@ -49,6 +49,10 @@ module fastchip
 	input  [23:0] rtg_pal_dr,
 	output [7:0]  rtg_pal_a,
 	output        rtg_pal_wr,
+	// RTG pointer sprite write bus
+	output [8:0]  rtg_spr_a,
+	output [15:0] rtg_spr_d,
+	output        rtg_spr_wr,
 
 	input         ide_ena,
 	output        ide_irq,
@@ -143,7 +147,10 @@ rtg rtg
 	.pal_dw(rtg_pal_dw),
 	.pal_dr(rtg_pal_dr),
 	.pal_a(rtg_pal_a),
-	.pal_wr(rtg_pal_wr)
+	.pal_wr(rtg_pal_wr),
+	.spr_a(rtg_spr_a),
+	.spr_d(rtg_spr_d),
+	.spr_wr(rtg_spr_wr)
 );
 
 endmodule
