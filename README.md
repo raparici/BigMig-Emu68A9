@@ -11,11 +11,11 @@ always been. Only the processor moved.
 The result is an Amiga that is **520 to 770 MIPS**, from 800 MHz to 1.2 GHz of Host Speed, where
 Minimig's TG68K is about 12 — selectable as
 a **68EC020, a 68040 or a 68060+**, with a **68882-class FPU** and an open SIMD extension — and
-whose chip RAM is nonetheless **faster than a real A600's**.
+whose chip RAM is nonetheless **faster than a real A1200's**.
 
-It is fast enough to boot distributions made for the PiStorm and the Vampire — CaffeineOS and
-Coffin among them — from their own images, although booting them is not the same as being the
-best way to use BigMig (see [PiStorm and Vampire distributions](#pistorm-and-vampire-distributions)).
+It is fast enough to boot distributions made for the PiStorm — CaffeineOS among them — from their
+own images, although booting them is not the same as being the best way to use BigMig (see
+[PiStorm distributions](#pistorm-distributions)).
 
 > **BigMig is a separate core from Minimig, on purpose.** Minimig for MiSTer is excellent and
 > mature, and thousands of people have configurations that work. This core diverges in what it
@@ -87,9 +87,10 @@ very fast" would only be half a claim; the other half is that it feels like an F
 * **No Gayle IDE.** Storage goes through `bigmigHD.device`.
 * **No Toccata.** The MacroSystem Toccata, a Zorro II 16-bit sound card, is not in this core.
   Minimig's implementation of it is good work; here the 16-bit card is bigmigAHI.
-* **No MMU translation.** The 68040 and 68060+ answer their full MMU register set and store what
-  you write, but translation is never enabled — software that *probes* the MMU is happy,
-  software that needs real remapping is out of scope.
+* **No MMU translation yet.** The 68040 and 68060+ answer their full MMU register set and store
+  what you write, but translation is not enabled yet — software that *probes* the MMU is happy;
+  software that needs real remapping will have to wait. MMU translation is being worked on: a
+  first evaluation is done, and it is planned for a later release.
 
 ---
 
@@ -553,19 +554,19 @@ and autoboots from them. It takes:
   them as they mount.
 * **PiStorm/Emu68 SD-card images** (`.img`), as the distributions ship them: BigMig finds the
   Amiga disk inside the card's partition table and mounts it untouched. CaffeineOS boots this
-  way, with Emu68 DevTree OFF, the default (see *PiStorm and Vampire distributions*).
+  way, with Emu68 DevTree OFF, the default (see *PiStorm distributions*).
 
 Disk changes apply at the next Reset. The Drives page's **BigMig HDs Board** switch must be On —
 a new config starts with it Off — and Off removes the board altogether.
 
-### PiStorm and Vampire distributions
+### PiStorm distributions
 
-BigMig boots distributions made for the PiStorm (Emu68) and the Vampire — CaffeineOS and Coffin
-among them — from their own images, as they come (see *Hard disks*). We added this so that the
-content they carry — demos, games, WHDLoad installs — is within easy reach. But these
-distributions are prepared for hardware that is not ours: with BigMig's drivers installed they
-work, yet it is much better to wait for their authors to make BigMig versions of them, or to build
-systems closer to what the MiSTer is. If you run one, four things to know:
+BigMig boots distributions made for the PiStorm (Emu68) — CaffeineOS among them — from their own
+images, as they come (see *Hard disks*). We added this so that the content they carry — demos,
+games, WHDLoad installs — is within easy reach. But these distributions are prepared for hardware
+that is not ours: with BigMig's drivers installed they work, yet it is much better to wait for
+their authors to make BigMig versions of them, or to build systems closer to what the MiSTer is.
+If you run one, three things to know:
 
 * **CPU Mode.** PiStorm's Emu68 presents itself as a 68040, and CaffeineOS is built for that:
   set **Mode** to **68040** on the Emu68-A9 page for it.
@@ -576,13 +577,6 @@ systems closer to what the MiSTer is. If you run one, four things to know:
   from the guest disk (see *The guest disk*): it patches the distribution with BigMig's drivers.
   **Our Install is what makes these distributions run reasonably well on BigMig** — as they
   come, they are built around hardware BigMig does not have.
-* **Coffin: OMMX OFF the first time.** When Coffin boots with a Kickstart that is not its own,
-  its `S:Startup-Sequence` runs Apollo's `ApolloMap` to write `DEVS:Kickstarts/coffin.rom` into a
-  Vampire's ROM and restart. ApolloMap takes BigMig for a Vampire because OMMX runs the Apollo
-  instruction it tests for, and writing into BigMig's ROM stops the machine. So boot Coffin the
-  **first time with OMMX OFF** — ApolloMap then sees no Vampire and gives up — put a `;` in front
-  of the `C:ApolloMap` line in `S:Startup-Sequence`, set **OMMX ON** again, and run our
-  **Install** as above.
 * **They run, but they are not polished yet.** BigMig mounts these images and runs them, but
   some things in them do not yet work as they should, and many of the tools they carry cost
   performance on BigMig: frequent interrupts, and above all cache flushes — on a JIT each flush
@@ -666,7 +660,7 @@ screen. So, for such a distribution:
 1. Boot it the first time with **Emu68 DevTree OFF**.
 2. Delete the driver, or rename it or move it out of `Devs:Monitors`.
 3. Set **Emu68 DevTree ON** and Reset — Emu68Info and the other tools now find the resource.
-   On that boot, run our Install (see *PiStorm and Vampire distributions*).
+   On that boot, run our Install (see *PiStorm distributions*).
 
 * **Emu68Info** — Philippe Carpentier's, from the Emu68-tools collection — reads the firmware's
   identity, the JIT and its counters, and the loaded modules. The parts that describe a
