@@ -1,10 +1,10 @@
 {
   "schema": 2,
   "channel": "stable",
-  "generated": "2026-09-27T21:50:11Z",
+  "generated": "2026-10-10T17:26:38Z",
   "release": {
-    "tag": "20260927",
-    "notes": "https://github.com/raparici/BigMig-Emu68A9/releases/tag/20260927",
+    "tag": "20261010",
+    "notes": "https://github.com/raparici/BigMig-Emu68A9/releases/tag/20261010",
     "min_updater": 1
   },
   "set": [
@@ -18,51 +18,51 @@
       "role": "main",
       "file": "MiSTer_BigMig",
       "install": "/media/fat/MiSTer_BigMig",
-      "sha256": "77cdb8d99b9adfbf2cd3baf988981b3ff96474ad28569483974ce3753c546e69",
-      "size": 1515500,
-      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20260927/MiSTer_BigMig",
-      "version": "260927",
+      "sha256": "71955e91eb986b64bdf1ed0ca17c3e26f431ca322d3f2409292e66e7ee41aeed",
+      "size": 1523852,
+      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/MiSTer_BigMig",
+      "version": "261010",
       "running_binary": true,
       "requires": {
-        "firmware": ">=0.9.305"
+        "firmware": ">=0.9.327.1"
       }
     },
     "core": {
       "role": "core",
-      "file": "BigMig_20260927.rbf",
+      "file": "BigMig_20261010.rbf",
       "install": "discover:bigmig_rbf",
-      "sha256": "29de464686edcce85babd415a317d85d44ee84bcac7a303b4a57ce2587eee48c",
-      "size": 3327216,
-      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20260927/BigMig_20260927.rbf",
-      "version": "260927",
+      "sha256": "d068c9eb804d7d7c2ac107de8d887eec0293ccd032cb43652d80794196ccde2f",
+      "size": 4280904,
+      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/BigMig_20261010.rbf",
+      "version": "261010",
       "supersedes_glob": "BigMig*.rbf",
       "sidecar": {
-        "file": "BigMig_20260927.txt",
+        "file": "BigMig_20261010.txt",
         "sha256": "cbf340c01e5a509d158eaf951ebaa858639eca74fed1f146869f2016c2ef5124",
         "size": 199,
-        "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20260927/BigMig_20260927.txt"
+        "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/BigMig_20261010.txt"
       }
     },
     "firmware": {
       "role": "firmware",
       "file": "Emu68.img",
       "install": "/media/fat/linux/Emu68.img",
-      "sha256": "cc0c5658e7c204e511cc9b1bcce9f20385ad94b2074b99d3713126e383a2ff95",
-      "size": 2822176,
-      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20260927/Emu68.img",
-      "version": "0.9.305",
+      "sha256": "e0fda4a7177e25f4ed01529cc17fc4d6ba0e605232e22e2b8d32c1546a6ec702",
+      "size": 3956768,
+      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/Emu68.img",
+      "version": "0.9.327.1",
       "requires": {
-        "core": ">=260927"
+        "core": ">=261010"
       }
     },
     "guest": {
       "role": "guest",
-      "file": "BigMig_Guest_20260927.hdf",
+      "file": "BigMig_Guest_20261010.hdf",
       "install": "discover:bigmig_guest_hdf",
-      "sha256": "1fa3009ffc99609e581dcf56667d0d0e7b80d57a272c91e202905307a2ec6259",
+      "sha256": "15aaeb16d38a66cc5cd7e9eedce666c5a403f3b27ae415afa0055b6c1601a55b",
       "size": 8404992,
-      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20260927/BigMig_Guest_20260927.hdf",
-      "version": "20260927"
+      "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/BigMig_Guest_20261010.hdf",
+      "version": "20261010"
     }
   },
   "known_hashes": {
@@ -145,7 +145,8 @@
       "role": "sidecar",
       "tags": [
         "20260905",
-        "20260927"
+        "20260927",
+        "20261010"
       ]
     },
     "77cdb8d99b9adfbf2cd3baf988981b3ff96474ad28569483974ce3753c546e69": {
@@ -173,6 +174,33 @@
       "role": "guest",
       "tags": [
         "20260927"
+      ]
+    },
+    "71955e91eb986b64bdf1ed0ca17c3e26f431ca322d3f2409292e66e7ee41aeed": {
+      "role": "main",
+      "tags": [
+        "20261010"
+      ],
+      "version": "261010"
+    },
+    "d068c9eb804d7d7c2ac107de8d887eec0293ccd032cb43652d80794196ccde2f": {
+      "role": "core",
+      "tags": [
+        "20261010"
+      ],
+      "version": "261010"
+    },
+    "e0fda4a7177e25f4ed01529cc17fc4d6ba0e605232e22e2b8d32c1546a6ec702": {
+      "role": "firmware",
+      "tags": [
+        "20261010"
+      ],
+      "version": "0.9.327.1"
+    },
+    "15aaeb16d38a66cc5cd7e9eedce666c5a403f3b27ae415afa0055b6c1601a55b": {
+      "role": "guest",
+      "tags": [
+        "20261010"
       ]
     }
   }
