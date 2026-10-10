@@ -13,6 +13,10 @@ Minimig's TG68K is about 12 — selectable as
 a **68EC020, a 68040 or a 68060+**, with a **68882-class FPU** and an open SIMD extension — and
 whose chip RAM is nonetheless **faster than a real A1200's**.
 
+It also has a 3D card of its own, **BigMig 3Dx2**: two render units in the FPGA, fed by a 3D
+engine in the firmware, behind our own `Warp3D.library` and `minigl.library` (see
+[3D: BigMig 3Dx2](#3d-bigmig-3dx2)).
+
 It is fast enough to boot distributions made for the PiStorm — CaffeineOS among them — from their
 own images, although booting them is not the same as being the best way to use BigMig (see
 [PiStorm distributions](#pistorm-distributions)).
@@ -69,8 +73,9 @@ very fast" would only be half a claim; the other half is that it feels like an F
 | **Fast RAM** | 264 MB, served by the JIT from HPS DDR3 |
 | **RTG** | **ZZ9000** Zorro III graphics, up to 1920×1080, ARM-native blitter — and a native-rate analog output up to 640×480 |
 | **Ethernet** | the **ZZ9000 network function** — the stock `ZZ9000Net.device` takes a DHCP lease and holds a routed IP session on the real LAN |
-| **16-bit audio** | **bigmigAHI** — a 16-bit card of our own, with the `bigmigAHI.audio` AHI driver we wrote: 8 streams, 16-bit stereo, mixed on the ARM |
+| **16-bit audio** | **bigmigAHI** — a 16-bit card of our own, with the `bigmigAHI.audio` AHI driver (Toni Wilen's UAESND driver for WinUAE, adapted): 8 streams, 16-bit stereo, mixed on the ARM |
 | **MP3** | **MHI** — players that support it (AmigaAMP) hand MP3 decoding to the ARM through `mhibigmig.library` |
+| **3D** | **BigMig 3Dx2** — a dual pipeline GPU for the Amiga: two render units in the FPGA, a 3D engine in the firmware, and our own `Warp3D.library` and `minigl.library`; a kind of compact Voodoo 3 |
 | **Hard disk** | **bigmigHD.device** — autoboot, HDF images, raw partition images **and PiStorm/Emu68 SD-card images as they are** |
 | **CD** | up to four drives — ISO, CUE and CHD, hot-swappable |
 | **Floppy** | ADF, normal and turbo |
@@ -85,6 +90,10 @@ very fast" would only be half a claim; the other half is that it feels like an F
   only chip-bus master. That is what frees the logic and the timing margin.
 * **No MiSTer RTG card.** ZZ9000 replaces it.
 * **No Gayle IDE.** Storage goes through `bigmigHD.device`.
+* **No Amiga-side scandoubler, scanline effects or HQ2x.** The ones the core generated itself, on the
+  Amiga side, made room for the 3D GPU. MiSTer's scaler keeps its own scanlines and filters — more
+  modern and more advanced — exactly as before; an analog VGA monitor takes the scaled picture with
+  `vga_scaler=1` (and `video_mode=6` for 640×480 at 31.5 kHz); a 15 kHz CRT keeps the native output.
 * **No Toccata.** The MacroSystem Toccata, a Zorro II 16-bit sound card, is not in this core.
   Minimig's implementation of it is good work; here the 16-bit card is bigmigAHI.
 * **No MMU translation yet.** The 68040 and 68060+ answer their full MMU register set and store
@@ -100,17 +109,22 @@ SysInfo 4.4, same install, from 800 MHz to 1.2 GHz of Host Speed:
 
 | presented CPU | MIPS | MFlops | vs A600 |
 |---|---|---|---|
-| 68EC020 + 68882 | **520 – 770** | 20.5 – ~30 | ~940 – 1400× |
-| 68040 | 518 – ~770 | 19.4 – ~29 | ~930 – 1400× |
+| 68EC020 + 68882 | **520 – 770** | ~47 – **70** | ~940 – 1400× |
+| 68040 | 518 – ~770 | ~44 – ~66 | ~930 – 1400× |
 
-The 800 MHz figures are SysInfo's own readings; at 1.2 GHz SysInfo reads 760–770 MIPS, and the
-rest follows the clock.
+The MIPS at 800 MHz are SysInfo's own readings; at 1.2 GHz SysInfo reads 760–770 MIPS. The MFlops
+are SysInfo's reading at 1.2 GHz on the 68EC020 + 68882 — **70**, up from 27 before this release; the
+rest follows the clock, and the 68040 the 68EC020's ratio.
 
 * **43× to 64×** Minimig's TG68K with Data Cache.
 * As a 68040 the OS confirms it end to end: SysInfo reads *68040 / 68040+68882 / MMU 68040
   (not in use)*, and WhichAmiga reads *MC68040, 68040fpu*.
 * **Chip RAM**, TestROM2 with Chip Speed at Fast: **7.6 MB/s at 607 ns** an access — above
   Minimig's TG68K with its data cache on (5.9 MB/s, 899 ns) on both counts.
+* **3D**, BigMig 3Dx2 (68060+, 3D GPU Wait on Auto, Host Speed 1.2 GHz): Alain Thellier's **CoW3D 6**
+  in its 640×480 window, **87 fps**; **BlitzQuake-3Dx2** (BlitzQuake 1.50 drawing through our
+  `minigl.library`), `timedemo demo1` at 640×480, **45 fps**; **BlitzQuake 1.50** itself (its own MiniGL
+  inside, our Warp3D underneath), the same timedemo at 640×480, **34 fps**.
 
 Chip-RAM accesses do not go over the Amiga chip bus. They go down the memory controller's own CPU port, where a cycle completes when SDRAM actually commits it rather than when arbitration says so. Agnus keeps absolute priority for DMA.
 
@@ -120,7 +134,23 @@ Chip-RAM accesses do not go over the Amiga chip bus. They go down the memory con
 
 ### Install
 
-BigMig ships its own build of MiSTer's Main. **Install it as a second binary, not in place of
+**The quick way (recommended).** BigMig's installer is one script, `bigmig_update.sh`: it installs
+BigMig from nothing, updates it, and finishes an install that was left half-done.
+
+1. Copy `Scripts/bigmig_update.sh` from the release to `/media/fat/Scripts/` on the SD card.
+2. On the MiSTer, open the menu's **Scripts** entry and run **bigmig_update**, with a keyboard
+   attached. It shows what is on the card and what is missing, asks once, and does it: the core and
+   its `.txt` into `_Computer/`, `Emu68.img`, BigMig's own Main, the `[BigMig]` section of
+   `MiSTer.ini` — and only that section — and the guest disk beside your hard-disk images. It
+   never touches your official `MiSTer`, Linux, U-Boot or your `linux/u-boot.txt`. It needs a
+   network connection and a set clock.
+3. Put a Kickstart ROM where you already keep Minimig's — it cannot be downloaded.
+4. Load **BigMig**, then install the Amiga side from the guest disk: mount it and run its
+   **Install** (see [The guest disk](#the-guest-disk)).
+
+After that the OSD's **Check Updates** row keeps the set current (see [Check Updates](#check-updates)).
+
+**By hand** — or to know what the script does behind the scenes. BigMig ships its own build of MiSTer's Main. **Install it as a second binary, not in place of
 yours** — that way it runs only when you load BigMig, and the rest of your machine is untouched.
 
 1. Copy `MiSTer_BigMig` from the release to `/media/fat/` — a **new file**, and it already
@@ -206,8 +236,8 @@ second line your `v=` settings are kept and BigMig's are added to them, for BigM
 ### The guest disk
 
 `BigMig_Guest_YYYYMMDD.hdf` carries everything BigMig puts inside the Amiga — our drivers, the
-MiSTer Share handler, RiVA, BigMig's `mpega.library` and AHI 6 — laid out like `SYS:`, with an
-installer.
+MiSTer Share handler, RiVA, BigMig's `mpega.library`, AHI 6 and BigMig 3Dx2's libraries — laid out
+like `SYS:`, with an installer.
 
 1. On the OSD's **Drives** page, make sure **BigMig HDs Board** is On, put the `.hdf` in a free
    **Disk** slot, and Reset. It appears as **`BMG0:`**, volume **BigMig**, and it never boots,
@@ -217,7 +247,8 @@ installer.
 2. Open it and double-click **Install** — or, from a Shell, `CD BigMig:` then `Execute Install`.
 3. Reboot.
 
-Install first looks at what your system already has, under any name, and **never replaces a
+**Install is the recommended way**; the table below says what it does, for a manual install or to
+know what is behind the scenes. Install first looks at what your system already has, under any name, and **never replaces a
 file of yours without asking**: your screen modes, network settings, icons and mountfiles stay
 as they are. At the end it tells you only about what it did not find. Every slow step shows its
 progress, so a pause is never a hang. Everything the window shows also goes to a log you can
@@ -237,6 +268,7 @@ them in advance for a scripted install.
 | `Utilities/RiVA` | `SYS:Utilities/` | MPEG-1 video (below) |
 | `mpega/mpega.library` | `SYS:Libs/`, if you say yes | MP3 decoding in software (below) |
 | `WheelDriverAkiko/` | `SYS:WBStartup/`, `SYS:C/`, if you say yes | a wheel mouse, and Akiko's C2P (below) |
+| `3Dx2/` — BigMig 3Dx2 | `LIBS:`, if you say yes (or by the drawer's own **install-3dx2**) | 3D for Warp3D and MiniGL programs, see [3D: BigMig 3Dx2](#3d-bigmig-3dx2) |
 
 Install never replaces your `MountList` or your `User-Startup`. It puts the `SHARE:` entry
 **first** in your `MountList` — Mount takes the first entry of a name — keeping your file once as
@@ -255,8 +287,10 @@ you say so (yours is kept as `ZZ9000.card.pre-BigMig`).
 **RiVA** plays MPEG-1 video in any CPU mode: it uses OMMX when OMMX is ON and the plain 68k code
 otherwise — one program, which picks at start. Install replaces an older BigMig RiVA, asks
 before replacing anyone else's (yours is kept as `RiVA.pre-BigMig`), and keeps an icon you
-already have. Its sound needs AHI and an `mpega.library`. Its tooltypes (PRI, ASYNCPRI,
-AUDIOPRI, RESYNC), credits, licence and source are in `Utilities/RiVA-README.txt`.
+already have. The disk's RiVA icon sends its sound through MHI (the tooltype
+`MHI=mhibigmig.library`, see [MP3: MHI](#mp3-mhi)); without MHI its sound needs AHI and an
+`mpega.library`. Its tooltypes (PRI, ASYNCPRI, AUDIOPRI, RESYNC, MHI), credits, licence and source
+are in `Utilities/RiVA-README.txt`.
 
 **BigMig's `mpega.library`** (in `mpega/`) decodes MP3 in software, for RiVA and for players
 that use it. It runs in every CPU mode — 68EC020 with or without the 68882, 68040, 68060+ — and
@@ -314,15 +348,19 @@ Then the usual Joystick, ROM and HRTmon.
 **Drives** — the BigMig HDs board switch, four **Disk** slots for hard-disk and CD images, and
 Floppy Disk Turbo.
 
-The main page also carries **Check Updates**, between Save configuration and Reset.
+The main page also carries **3D GPU Wait**, right below Emu68-A9 (see
+[3D: BigMig 3Dx2](#3d-bigmig-3dx2)), and **Check Updates**, between Save configuration and Reset.
 
 Every setting is saved with the config slot, so a slot can be a whole machine: a 68040 with the
 RTG and no sound for one title, an 020 with everything for another.
 
-**When a change takes effect.** Everything on the JIT Settings page, Chip Cache and Host Speed
-apply at once — Host Speed at the next Reset on a Linux 6.x kernel. Mode, 68882, FPU ROM, OMMX
-and Chip Speed wait for a Reset — touch one and a **Reset (apply changes)** row appears at the
-foot of the page. The Zorro boards and the hard-disk slots wait for a Reset too.
+**When a change takes effect.** Everything on the JIT Settings page, 3D GPU Wait, Chip Cache and
+Host Speed apply at once — Host Speed at the next Reset on a Linux 6.x kernel. They answer for a
+moment on the page's last line: a JIT setting or 3D GPU Wait says `<name>: applied` when the firmware
+has taken the change and `<name>: queued (no ack)` when it has not answered — the change then waits
+for the next Reset; Host Speed, Chip Cache and ZZ9000 Network say what they did.
+Mode, 68882, FPU ROM, OMMX and Chip Speed wait for a Reset — touch one and a **Reset (apply changes)**
+row appears at the foot of the page. The Zorro boards and the hard-disk slots wait for a Reset too.
 
 ⚠ **On a board, OFF means ABSENT, not idle.**  The card leaves the autoconfig chain entirely and
 the firmware stops spending anything on it, so the guest never sees it and the emulation core
@@ -374,6 +412,9 @@ The Emu68-A9 page, saved per config:
   player and an MP3 decoder say, run side by side.  The spec is open, and worked examples exist.
   A caveat worth knowing before porting code: OMMX buys *arithmetic* throughput; a display path
   that is memory-bound gains nothing, and we publish the measurements that show it.
+  **OMMX is ON by default**, and a config saved by an earlier release comes up with it ON too: video,
+  MP3 decoding and the 3D libraries depend on it. Turn it OFF only for a program that mistakes it for
+  a Vampire's AMMX and goes looking for Apollo hardware.
 
 ### Host Speed, Chip Speed and Chip Cache
 
@@ -499,7 +540,9 @@ the voices, the mixing is done by the 68k, and MP3 playback or a tracker wanting
 output has nowhere to go.  So the core carries a 16-bit sound card of its own, **bigmigAHI**,
 and the AHI sub-driver that binds it.  The card is the **BigMig AHI/MHI** row on the System page.
 
-It is not an emulation of anyone else's board.  The card model and the mixing both run on the
+It follows **WinUAE's UAESND sound board**, Toni Wilen's design: the firmware models that board's
+interface, and `bigmigAHI.audio` is his UAESND AHI driver, adapted for BigMig (credits below).
+The card model and the mixing both run on the
 firmware core, which leaves the Linux core free to serve the guest's disk and file requests —
 music keeps playing while you open a drawer.  The card takes 8 independent streams of 16-bit
 stereo, and the mixing arithmetic happens on the ARM, not on the emulated 68k: a Workbench
@@ -539,9 +582,101 @@ The decoder lives on the ZZ9000 board, as it does on the real card, so it needs 
 ON; ShowConfig shows no separate board for it. It also follows the System page's **BigMig
 AHI/MHI** switch: OFF, and the player falls back to its own decoder.
 
+It decodes **MP2** (MPEG Layer II) as well, and **RiVA** sends its sound through it when its icon
+carries the tooltype `MHI=mhibigmig.library` — the guest disk's does: the ARM decodes, the 68k keeps
+its time for the picture, and the picture follows the sound as it is heard. When MHI cannot take
+the sound (BigMig AHI/MHI OFF, another program using it) RiVA plays it as before, through
+`mpega.library` and AHI.
+
 Having MHI does not make it the fastest way to play MP3 on BigMig. With **OMMX** ON, a player that
 decodes in software through BigMig's own `mpega.library` — whose synthesis runs on OMMX, and which
 Install offers — can be even faster. MHI's strength is that the decoding happens off the 68k.
+
+### 3D: BigMig 3Dx2
+
+BigMig has a 3D card of its own: **BigMig 3Dx2**. A kind of compact Voodoo 3 — Voodoo 3 features,
+performance between a Voodoo2 and a Voodoo3. A 3D engine in the firmware, on the ARM, takes a
+program's triangles, clips them and sorts them into screen bands; in the FPGA two render units — the
+"x2" — each a triangle-setup unit of ours in front of a pixel pipeline derived from ToNi3141's
+RasterIX, turn them into pixels. Our own **`Warp3D.library`** and **`minigl.library`**, on the guest
+disk, hand the work over.
+
+* **Warp3D** programs — CoW3D, and the games that draw through Warp3D, the 68k GLQuake ports among
+  them — use it through `Warp3D.library`.
+* **MiniGL** programs that open `minigl.library` use ours. On BigMig its OpenGL work — transforming,
+  lighting and clipping the geometry — runs in the firmware's 3D engine on the ARM, one call for a whole
+  batch of commands, so the 68k is left with the game itself. Games that carry a MiniGL inside them
+  (BlitzQuake 1.50, GLQuake 68k) draw through `Warp3D.library`.
+* Programs that ask which card they draw on are told a **Voodoo 3**, so software written for one
+  takes its usual path; the libraries themselves say *BigMig 3Dx2*.
+* It draws in **16-bit colour** (RGB565, with ordered dithering when a program asks for it), with a
+  16-bit Z buffer, bilinear filtering, mipmaps, fog and blending, and textures up to 256×256 —
+  larger ones are scaled down by the library. It has 24 MB of texture memory; when a game wants more,
+  the library recycles the textures drawn longest ago. There is no stencil buffer. On a 32-bit screen
+  the picture is converted as it is shown.
+
+**How the pieces fit.** Warp3D and MiniGL are layers, not alternatives: Warp3D is the Amiga's
+low-level 3D driver (triangles, textures, render states), and MiniGL is a subset of OpenGL that
+traditionally runs on top of it. "MiniGL" names three different things:
+
+* Hyperion's **MiniGL 1.x**, the classic one, which some games carry inside them — BlitzQuake 1.50
+  among them. Such a game uses only our `Warp3D.library`.
+* **PiStorm3D's `minigl.library`** (Steffen Haeuser), with its two programming interfaces: the earlier
+  *MiniGL Library Classic* 27 and the final MiniGL 29, the one PiStorm3D's ports are built with. Its
+  *Classic* build is the one that runs on Warp3D, on Amigas without a PiStorm3D.
+* **Ours**, which implements both of PiStorm3D's interfaces, so programs built for either run unchanged.
+
+Ours has two paths. On BigMig it hands its work straight to the firmware's 3D engine. Anywhere else —
+or with `SetEnv MiniGL/Path PORTABLE` — it draws through whatever `Warp3D.library` is installed, on any
+Amiga that has one.
+
+**What it needs.** **OMMX ON** on the Emu68-A9 page — OMMX is how the libraries reach the firmware's
+engine; it is ON by default. **Picasso96 and the ZZ9000**:
+the 3D draws on RTG screens. And the two libraries in `LIBS:`: the guest disk's **Install** offers
+them — it asks once, and `SetEnv BigMig3D 1` answers yes in advance. A Warp3D or MiniGL of yours is
+kept once as `LIBS:Warp3D.library.orig` / `LIBS:minigl.library.orig` (and left alone if such a
+`.orig` is there already); BigMig's own older builds are updated, the same or newer ones are left.
+By hand, the disk's **`3Dx2`** drawer has **install-3dx2** — double-click it, or from a Shell
+`CD BigMig:3Dx2` then `Execute install-3dx2`. Reboot afterwards. `restore-warp3d` and
+`restore-minigl`, in the same drawer, put yours back.
+
+**Is it working?** On a ZZ9000 Workbench, double-click **a3d-check** in the drawer. On BigMig with
+OMMX ON it reports `path: ENGINE-FABRIC`, draws five lines and ends with `8 PASS, 0 FAIL` and
+`12 PASS, 0 FAIL`. The drawer also holds Alain Thellier's **CoW3D** — start `CoW3D6-os3` from its
+own drawer; it needs an FPU.
+
+**3D GPU Wait: Auto / Exact** — on the OSD's main page, below Emu68-A9. How the 3D engine answers
+a program's `W3D_WaitIdle` and `W3D_UnLockHardware`. **Auto**, the default, keeps the drawing queued
+and protects the picture's memory instead: a program that waits out of habit loses nothing, and one
+that then reads or writes its pixels — or a blit, a screen flip or a disk transfer into the picture
+— gets the finished picture first, with nothing to set per program. **Exact** finishes the frame at
+every wait, as before: use it if a title misbehaves under Auto. It applies live and is saved with the
+config slot. **(L)** after the value means the engine is running and uses that mode now.
+
+**Elsewhere, slowly.** With OMMX OFF, on a plain Minimig, under UAE or on a PiStorm, our
+`Warp3D.library` still opens: on a CPU with an FPU it hands every call to the Warp3D you had before
+(`LIBS:Warp3D.library.orig`); otherwise it draws on the 68k itself, on any 68020 or later, with or
+without an FPU — it works, but it is slow. `a3d-check` says which way it draws: `ENGINE-FABRIC` (the
+GPU), `ENGINE-SOFT` (the engine without a GPU core), `ORIG-PROXY` or `68K-FALLBACK`.
+
+**PiStorm3D's ports run too.** Programs built for PiStorm3D's MiniGL — the final 29 or the earlier
+Classic 27 — open ours and get the function table they were built for, with OpenGL's own token values.
+Tested on BigMig: the Quake 1 port (GLQuake) with Quake's shareware data, and Hurrican. Others, such as
+Jedi Outcast, Return to Castle Wolfenstein, Quake 3 and OpenLara, need the original game's data, which you
+must own.
+
+**BlitzQuake-3Dx2** — Christian Michael's BlitzQuake 1.50, rebuilt so that its OpenGL goes through
+`minigl.library`, whose work then runs on the ARM — is in the disk's `3Dx2/BlitzQuake-3Dx2/` drawer,
+with its complete source (GPL v2) in `src/`. Start it with the drawer's **play** icon, or from a Shell
+with `Execute play`: Quake needs at least 600 KB of stack, and `play` gives it 1 MB — started with a
+Shell's default stack the game hangs or fails at once. To keep it on your hard disk, copy the whole
+drawer.
+
+It needs **Quake's game data**, which the BigMig disk does not carry: id Software's shareware
+**Quake 1.06**. The release includes it, unmodified, as `quake106.zip` (9,094,045 bytes), as id's
+licence allows. Inside it, `resource.1` is an LhA archive: unpack it with LhA and copy its
+`id1/pak0.pak` (18,689,235 bytes, md5 `5906e5998fc3d896ddaf5e6a62e03abb`) to the game's `id1/`
+drawer. The registered game's `id1/pak0.pak` and `pak1.pak` work too.
 
 ### Hard disks
 
@@ -695,6 +830,11 @@ clock.
 
 ## BigMig does not start
 
+**First, run the installer again.** `bigmig_update.sh`, from the menu's **Scripts** entry (see
+[Install](#install)), checks the whole installation and repairs it: a missing or edited `.txt`, a
+core in the wrong place, files from different releases, the `[BigMig]` section of `MiSTer.ini`.
+Most of the cases below are fixed by it. What follows is the manual way, message by message.
+
 Loading BigMig restarts the board once, so that Linux comes back up on one ARM core and leaves
 the other to the firmware (see [the sidecar](#the-sidecar-briefly)). If that did not happen,
 BigMig cannot start its CPU, and the OSD says why for ten seconds. The same diagnosis goes, as one
@@ -796,10 +936,11 @@ core list, or see README:
 Linux came up on both cores and none of the specific causes above applies. Load BigMig from the
 OSD's core list; if the message comes back, send us `emu68_boot.log`.
 
-⛔ **Do not put `maxcpus=1` in `/linux/u-boot.txt`.** If you added it to get an earlier release
-running, take it out: that file applies to **every** core, so each of them would run Linux on one
-ARM core instead of two, and official cores can stall that way. BigMig's `.txt` gives
-`maxcpus=1` to BigMig alone.
+**Last resort: `maxcpus=1` in `/linux/u-boot.txt`.** If nothing above gets BigMig's `.txt` to apply,
+adding `maxcpus=1` to the `v=` line of `/linux/u-boot.txt` starts BigMig. ⚠ That file applies to
+**every** core: with it, Linux runs on one ARM core for all of them, and MiSTer's official Main is not
+made to run on a single core — official cores can stall. Take it out again as soon as BigMig's own
+`.txt` works.
 
 ---
 
@@ -835,13 +976,13 @@ BigMig stands on other people's work, and most of the Amiga in it is theirs.
 | **MiSTer framework** (`sys/`) | Sorgelig (Alexey Melnikov) and the MiSTer-devel project | GPLv3 |
 | **Minimig Hybrid** — the first hybrid Minimig, and the original seam register blocks | Mark Watson | see the Minimig Hybrid project |
 | **Emu68** — the JIT this port descends from | Michal Schulz | see the Emu68 project |
-| **Emu68-A9** — the ARMv7 / Cortex-A9 port of Emu68 | Ruben Aparicio (@raparici) | as Emu68 |
+| **Emu68-A9** — the ARMv7 / Cortex-A9 port of Emu68 | Ruben Aparicio (@raparici) | as Emu68 (MPL 2.0); the image also carries the ZZ9000 card model's code by MNT Research (below, GPLv3 or later), so the firmware image as a whole is GPLv3|
 | **bigmigHD.device** and its autoboot ROM | Ruben Aparicio (@raparici), derived from Michal Schulz's `brcm-sdhc.device` and Emu68rom | MPL 2.0, as the originals |
-| **ZZ9000** — the RTG driver, and the video formatter our analog RTG scan-out is ported from | MNT Research / Lucie L. Hartmann and contributors | see the ZZ9000 project |
+| **ZZ9000** — the card BigMig's firmware models (its ZZ9000OS code), the RTG driver `ZZ9000.card` (BigMig's 2.8 adds the asynchronous blit queue), `ZZ9000Net.device`, the MHI driver behind `mhibigmig.library`, and the video formatter our analog RTG scan-out is ported from | MNT Research GmbH / Lucie L. Hartmann, with Bjorn Astrom, Thomas Wenzel, Dimitris Panokostas (BlitterStudio) and contributors | GPLv3 or later |
 | **The seam** — `axi_seam_slave`, `seam_engine`, `seam_ipl`, `seam_cpuregs`, `h2f_axi3_to_lite`, the hybrid bridge | Ruben Aparicio (@raparici) | GPLv3 |
 | **RTG analog scan-out and pointer overlay** — `rtg_ddr_reader`, `rtg_scanout`, `rtg_sprite_overlay`, `rtg_hdmi_osd_sprite` | Ruben Aparicio (@raparici); `rtg_scanout` is ported from the ZZ9000's `video_formatter` | GPLv3 or later |
-| **bigmigAHI** — the card model and `bigmigAHI.audio` | Ruben Aparicio (@raparici) | our own; source not published yet, so no licence yet |
-| **mhibigmig.library** | Ruben Aparicio (@raparici), after the ZZ9000's own MHI driver | MIT |
+| **bigmigAHI** — the card model and `bigmigAHI.audio` | `bigmigAHI.audio` is **Toni Wilen**'s UAESND AHI driver for WinUAE, adapted for BigMig by Ruben Aparicio (@raparici); the card model in the firmware, which implements the UAESND hardware, is Ruben Aparicio's | `bigmigAHI.audio`: GPLv2 or later, as Toni Wilen's driver; the card model: GPLv3 or later|
+| **mhibigmig.library** | Ruben Aparicio (@raparici), after the ZZ9000's MHI driver by **Thomas Wenzel** and **Lucie L. Hartmann** (MNT Research) | GPLv3 or later, as the ZZ9000 MHI driver|
 | **minimp3** — the MP3 decoder behind MHI | lieff and contributors | CC0 (public domain) |
 | **MiSTer Share handler** (`MiSTerFileSystem`) | Sorgelig (Alexey Melnikov), from Niklas Ekström's a314 original; the fast path is ours | see Minimig for MiSTer |
 | **mpega.library** — BigMig's build, on the guest disk | Sigbjørn "CISC" Skjæret's libmad-based clone, with Jarmo Laakkonen and Stephan Rupprecht; libmad by Underbit Technologies (Robert Leslie); the OMMX synthesis and the one build for every CPU mode are ours | GPLv2 or later (libmad) |
@@ -849,6 +990,11 @@ BigMig stands on other people's work, and most of the Amiga in it is theirs.
 | **AHI 6.0** on the guest disk | Martin Blom; `paula.audio` and `toccata.audio` are public domain | GPL and LGPL (`AHI6/COPYING`, `COPYING.LIB`, `COPYING.DRIVERS`); Aminet's binaries, unchanged; source on Aminet: [`driver/audio/ahisrc`](https://aminet.net/package/driver/audio/ahisrc) |
 | **WheelDriver, FreeWheel, SetAkiko** on the guest disk | Alastair M. Robinson, as Minimig for MiSTer ships them | see the tools' own notes |
 | **MiSTer Main** (BigMig build) | MiSTer-devel, with our hybrid loader | GPLv3 |
+| **BigMig 3Dx2** — the GPU in the core (`rtl/gpu`) | the pixel pipeline is **RasterIX** by **ToNi3141** (https://github.com/ToNi3141/RasterIX); the AXI crossbar Alex Forencich's `verilog-axi`; the setup units, the band dispatcher, the memory port and the changes to RasterIX are ours, Ruben Aparicio (@raparici) | GPLv3 (`verilog-axi`: MIT) |
+| **BigMig 3Dx2** — `Warp3D.library`, `minigl.library` and their test programs | Ruben Aparicio (@raparici); Alain Thellier's Wazp3D was the reference for Warp3D's behaviour | ours; sources will be released when considered complete |
+| **BigMig 3Dx2** — the 3D engine in the firmware | Ruben Aparicio (@raparici) | part of the firmware, published with its source |
+| **CoW3D** — the Warp3D demo on the guest disk | Alain Thellier | GPL — its Aminet archive, source included, in `3Dx2/CoW3D/` |
+| **BlitzQuake-3Dx2** on the guest disk | Christian Michael's BlitzQuake 1.50, after the Quake / QuakeWorld ports by Frank Wille and Steffen Haeuser, from id Software's Quake; BigMig's rebuild and its import glue by Ruben Aparicio (@raparici) | GPL v2 (the glue: MIT) — complete source in `3Dx2/BlitzQuake-3Dx2/src/` |
 
 ⚠ **The firmware in this repository is a compiled binary.** Its source lives in its own
 repository and is published separately, under its own licence.
