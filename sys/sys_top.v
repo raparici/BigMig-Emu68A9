@@ -624,6 +624,19 @@ wire clk_100m;
 //   Quartus 20.1 and MiSTer builds on 17.0.2.                            //
 //========================================================================//
 
+`ifdef BIGMIG_GPU
+// GPU register block, AXI4-Lite (clk_100m)
+wire [11:0] gpu_l_awaddr; wire gpu_l_awvalid, gpu_l_awready; wire [31:0] gpu_l_wdata; wire gpu_l_wvalid, gpu_l_wready;
+wire  [1:0] gpu_l_bresp;  wire gpu_l_bvalid, gpu_l_bready;
+wire [11:0] gpu_l_araddr; wire gpu_l_arvalid, gpu_l_arready; wire [31:0] gpu_l_rdata; wire [1:0] gpu_l_rresp;
+wire        gpu_l_rvalid, gpu_l_rready;
+`ifndef HYBRID_EMU
+// no h2f datapath in this build: the GPU stays idle (nothing can ring its doorbell)
+assign gpu_l_awaddr = 12'd0; assign gpu_l_awvalid = 1'b0; assign gpu_l_wdata = 32'd0; assign gpu_l_wvalid = 1'b0;
+assign gpu_l_bready = 1'b1;  assign gpu_l_araddr = 12'd0; assign gpu_l_arvalid = 1'b0; assign gpu_l_rready = 1'b1;
+`endif
+`endif
+
 `ifdef HYBRID_EMU
 //------------------------------------------------------------------------//
 wire [11:0] hps_h2f_awid;
@@ -684,6 +697,14 @@ wire [31:0] seam_h2f_rdata;
 wire  [1:0] seam_h2f_rresp;
 wire        seam_h2f_rvalid;
 wire        seam_h2f_rready;
+`ifdef BIGMIG_GPU
+// adapter lite side, split between the seam and the GPU registers
+wire [29:0] h2f_l_awaddr;  wire [2:0] h2f_l_awprot; wire h2f_l_awvalid, h2f_l_awready;
+wire [31:0] h2f_l_wdata;   wire [3:0] h2f_l_wstrb;  wire h2f_l_wvalid, h2f_l_wready;
+wire  [1:0] h2f_l_bresp;   wire h2f_l_bvalid, h2f_l_bready;
+wire [29:0] h2f_l_araddr;  wire [2:0] h2f_l_arsize, h2f_l_arprot; wire h2f_l_arvalid, h2f_l_arready;
+wire [31:0] h2f_l_rdata;   wire [1:0] h2f_l_rresp;  wire h2f_l_rvalid, h2f_l_rready;
+`endif
 `endif
 
 sysmem_lite sysmem
@@ -782,7 +803,11 @@ sysmem_lite sysmem
 h2f_axi3_to_lite #(
 	.ID_WIDTH        (12),
 	.H2F_ADDR_WIDTH  (30),
+`ifdef BIGMIG_GPU
+	.LITE_ADDR_WIDTH (30),
+`else
 	.LITE_ADDR_WIDTH (25),
+`endif
 	.DATA_WIDTH      (32)
 ) u_h2f_adapter
 (
@@ -827,7 +852,29 @@ h2f_axi3_to_lite #(
 	.s_rvalid  (hps_h2f_rvalid),
 	.s_rready  (hps_h2f_rready),
 
-	// AXI4-Lite master side -> emu/axi_seam_slave
+	// AXI4-Lite master side -> emu/axi_seam_slave (with BIGMIG_GPU through h2f_lite_gpu_demux)
+`ifdef BIGMIG_GPU
+	.m_awaddr  (h2f_l_awaddr),
+	.m_awprot  (h2f_l_awprot),
+	.m_awvalid (h2f_l_awvalid),
+	.m_awready (h2f_l_awready),
+	.m_wdata   (h2f_l_wdata),
+	.m_wstrb   (h2f_l_wstrb),
+	.m_wvalid  (h2f_l_wvalid),
+	.m_wready  (h2f_l_wready),
+	.m_bresp   (h2f_l_bresp),
+	.m_bvalid  (h2f_l_bvalid),
+	.m_bready  (h2f_l_bready),
+	.m_araddr  (h2f_l_araddr),
+	.m_arsize  (h2f_l_arsize),
+	.m_arprot  (h2f_l_arprot),
+	.m_arvalid (h2f_l_arvalid),
+	.m_arready (h2f_l_arready),
+	.m_rdata   (h2f_l_rdata),
+	.m_rresp   (h2f_l_rresp),
+	.m_rvalid  (h2f_l_rvalid),
+	.m_rready  (h2f_l_rready)
+`else
 	.m_awaddr  (seam_h2f_awaddr),
 	.m_awprot  (seam_h2f_awprot),
 	.m_awvalid (seam_h2f_awvalid),
@@ -848,7 +895,33 @@ h2f_axi3_to_lite #(
 	.m_rresp   (seam_h2f_rresp),
 	.m_rvalid  (seam_h2f_rvalid),
 	.m_rready  (seam_h2f_rready)
+`endif
 );
+
+`ifdef BIGMIG_GPU
+// 0xC2000000-0xC3FFFFFF -> GPU registers, the rest -> the seam
+h2f_lite_gpu_demux #(.A(30)) u_h2f_gpu_demux
+(
+	.aclk(clk_100m), .aresetn(~reset),
+	.s_awaddr(h2f_l_awaddr), .s_awprot(h2f_l_awprot), .s_awvalid(h2f_l_awvalid), .s_awready(h2f_l_awready),
+	.s_wdata(h2f_l_wdata), .s_wstrb(h2f_l_wstrb), .s_wvalid(h2f_l_wvalid), .s_wready(h2f_l_wready),
+	.s_bresp(h2f_l_bresp), .s_bvalid(h2f_l_bvalid), .s_bready(h2f_l_bready),
+	.s_araddr(h2f_l_araddr), .s_arsize(h2f_l_arsize), .s_arprot(h2f_l_arprot), .s_arvalid(h2f_l_arvalid),
+	.s_arready(h2f_l_arready),
+	.s_rdata(h2f_l_rdata), .s_rresp(h2f_l_rresp), .s_rvalid(h2f_l_rvalid), .s_rready(h2f_l_rready),
+	.m0_awaddr(seam_h2f_awaddr), .m0_awprot(seam_h2f_awprot), .m0_awvalid(seam_h2f_awvalid), .m0_awready(seam_h2f_awready),
+	.m0_wdata(seam_h2f_wdata), .m0_wstrb(seam_h2f_wstrb), .m0_wvalid(seam_h2f_wvalid), .m0_wready(seam_h2f_wready),
+	.m0_bresp(seam_h2f_bresp), .m0_bvalid(seam_h2f_bvalid), .m0_bready(seam_h2f_bready),
+	.m0_araddr(seam_h2f_araddr), .m0_arsize(seam_h2f_arsize), .m0_arprot(seam_h2f_arprot), .m0_arvalid(seam_h2f_arvalid),
+	.m0_arready(seam_h2f_arready),
+	.m0_rdata(seam_h2f_rdata), .m0_rresp(seam_h2f_rresp), .m0_rvalid(seam_h2f_rvalid), .m0_rready(seam_h2f_rready),
+	.m1_awaddr(gpu_l_awaddr), .m1_awvalid(gpu_l_awvalid), .m1_awready(gpu_l_awready),
+	.m1_wdata(gpu_l_wdata), .m1_wvalid(gpu_l_wvalid), .m1_wready(gpu_l_wready),
+	.m1_bresp(gpu_l_bresp), .m1_bvalid(gpu_l_bvalid), .m1_bready(gpu_l_bready),
+	.m1_araddr(gpu_l_araddr), .m1_arvalid(gpu_l_arvalid), .m1_arready(gpu_l_arready),
+	.m1_rdata(gpu_l_rdata), .m1_rresp(gpu_l_rresp), .m1_rvalid(gpu_l_rvalid), .m1_rready(gpu_l_rready)
+);
+`endif
 `endif
 
 wire [28:0] ram2_address;
@@ -862,10 +935,28 @@ wire        ram2_read;
 wire        ram2_write;
 wire  [7:0] ram2_bcnt;
 
+`ifdef BIGMIG_GPU
+// ram2 shared by the RTG reader and ddr_svc (avl_rd_arb2, clk_audio)
+wire [28:0] svc_address;  wire [7:0] svc_burstcount; wire svc_read, svc_waitrequest, svc_readdatavalid;
+wire [28:0] rtgr_address; wire [7:0] rtgr_burstcount; wire rtgr_read, rtgr_waitrequest, rtgr_readdatavalid;
+wire [63:0] rtgr_readdata;
+`endif
+
 ddr_svc ddr_svc
 (
 	.clk(clk_audio),
 
+`ifdef BIGMIG_GPU
+	.ram_waitrequest(svc_waitrequest),
+	.ram_burstcnt(svc_burstcount),
+	.ram_addr(svc_address),
+	.ram_readdata(ram2_readdata),
+	.ram_read_ready(svc_readdatavalid),
+	.ram_read(svc_read),
+	.ram_writedata(),
+	.ram_byteenable(),
+	.ram_write(),
+`else
 	.ram_waitrequest(ram2_waitrequest),
 	.ram_burstcnt(ram2_burstcount),
 	.ram_addr(ram2_address),
@@ -875,6 +966,7 @@ ddr_svc ddr_svc
 	.ram_writedata(ram2_writedata),
 	.ram_byteenable(ram2_byteenable),
 	.ram_write(ram2_write),
+`endif
 	.ram_bcnt(ram2_bcnt),
 
 `ifndef MISTER_DISABLE_ALSA
@@ -1827,6 +1919,24 @@ pll_audio pll_audio
 	.outclk_0(clk_audio)
 );
 
+`ifdef BIGMIG_GPU
+// ram2 arbiter: round-robin, RTG reader / ddr_svc
+reg   [2:0] rtgr_rst_s = 3'b111;
+always @(posedge clk_audio) rtgr_rst_s <= {rtgr_rst_s[1:0], reset};
+wire        rtgr_rst = rtgr_rst_s[2];
+avl_rd_arb2 #(.AW(29)) ram2_arb
+(
+	.clk(clk_audio), .rst(rtgr_rst),
+	.m0_address(rtgr_address), .m0_burstcount(rtgr_burstcount), .m0_read(rtgr_read),
+	.m0_waitrequest(rtgr_waitrequest), .m0_readdata(rtgr_readdata), .m0_readdatavalid(rtgr_readdatavalid),
+	.m1_address(svc_address), .m1_burstcount(svc_burstcount), .m1_read(svc_read),
+	.m1_waitrequest(svc_waitrequest), .m1_readdata(), .m1_readdatavalid(svc_readdatavalid),
+	.s_address(ram2_address), .s_burstcount(ram2_burstcount), .s_read(ram2_read),
+	.s_waitrequest(ram2_waitrequest), .s_readdata(ram2_readdata), .s_readdatavalid(ram2_readdatavalid),
+	.s_writedata(ram2_writedata), .s_byteenable(ram2_byteenable), .s_write(ram2_write)
+);
+`endif
+
 wire spdif;
 audio_out audio_out
 (
@@ -2162,7 +2272,7 @@ emu emu
 `endif
 );
 
-// RTG mouse pointer on the HDMI output, under the OSD (same $B80C00 feed as the analog overlay)
+// RTG mouse pointer on the HDMI output, under the OSD, scaled with the picture (same $B80C00 feed as the analog overlay)
 `ifndef MISTER_DEBUG_NOHDMI
 `ifdef MISTER_FB_PALETTE
 rtg_hdmi_osd_sprite u_rtg_hdmi_osd_sprite
@@ -2199,7 +2309,47 @@ assign {hdmi_data_spr, hdmi_de_spr, hdmi_hs_spr, hdmi_vs_spr} =
 `endif
 
 // native-rate RTG analog scanout: a ram1 (f2h_sdram1) reader on clk_100m, the raster on clk_vid + clock-enable
+// (with BIGMIG_GPU: ram1 belongs to the GPU and the reader uses ram2 on clk_audio)
+
+`ifdef BIGMIG_GPU
+// GPU on ram1, idle until the firmware enables it
+wire clk_gpu, gpu_locked;
+gpu_pll gpu_pll (.refclk(FPGA_CLK3_50), .rst(1'b0), .outclk_0(clk_gpu), .locked(gpu_locked));
+reg  [2:0] gpu_rst_s = 3'b111;
+always @(posedge clk_gpu) gpu_rst_s <= {gpu_rst_s[1:0], reset | ~gpu_locked};
+wire gpu_resetn = ~gpu_rst_s[2];
+assign ram_clk = clk_gpu;
+`ifdef BIGMIG_GPU_LEAN
+localparam GPU_LEAN_CNT = 1;
+`else
+localparam GPU_LEAN_CNT = 0;
+`endif
+`ifdef BIGMIG_GPU_SHARED_SETUP
+localparam GPU_SETUP_SHARED = 1;
+`else
+localparam GPU_SETUP_SHARED = 0;
+`endif
+`ifdef BIGMIG_GPU_CSWAP
+localparam GPU_COLOR_SWAP = 1;
+`else
+localparam GPU_COLOR_SWAP = 0;
+`endif
+bm_gpu_top #(.N(2), .UC_FILE("rtl/gpu/bigmig/bm_setup_ucode.hex"), .LUT_FILE("rtl/gpu/bigmig/bm_setup_lut.hex"),
+	.LEAN_CNT(GPU_LEAN_CNT), .SETUP_SHARED(GPU_SETUP_SHARED), .COLOR_SWAP(GPU_COLOR_SWAP)) u_gpu
+(
+	.clk_g(clk_gpu), .resetn_g(gpu_resetn), .clk_h(clk_100m), .resetn_h(~reset),
+	.s_awaddr(gpu_l_awaddr), .s_awvalid(gpu_l_awvalid), .s_awready(gpu_l_awready),
+	.s_wdata(gpu_l_wdata), .s_wvalid(gpu_l_wvalid), .s_wready(gpu_l_wready),
+	.s_bvalid(gpu_l_bvalid), .s_bready(gpu_l_bready), .s_bresp(gpu_l_bresp),
+	.s_araddr(gpu_l_araddr), .s_arvalid(gpu_l_arvalid), .s_arready(gpu_l_arready),
+	.s_rdata(gpu_l_rdata), .s_rvalid(gpu_l_rvalid), .s_rready(gpu_l_rready), .s_rresp(gpu_l_rresp),
+	.avl_address(ram_address), .avl_burstcount(ram_burstcount), .avl_waitrequest(ram_waitrequest),
+	.avl_readdata(ram_readdata), .avl_readdatavalid(ram_readdatavalid), .avl_read(ram_read),
+	.avl_writedata(ram_writedata), .avl_byteenable(ram_byteenable), .avl_write(ram_write)
+);
+`else
 assign ram_clk = clk_100m;
+`endif
 
 wire [1:0] rtg_cmode  = (RTG_FMT[2:0]==3'b011) ? 2'd0 :   // 8bpp CLUT
                         (RTG_FMT[2:0]==3'b100) ? 2'd1 :   // 16bpp
@@ -2242,6 +2392,25 @@ wire [11:0] rtg_vact_c = ((rtg_h_v == 12'd0) || (rtg_h_v > rtg_vmax)) ? rtg_vmax
 
 wire [11:0] rtg_vfp_c  = (rtg_vtotal_c - rtg_vact_c - rtg_vsw) >> 1;  // centred vertically
 
+// two register stages for the derived raster (timing)
+reg [11:0] rtg_htotal_p   = RTG_HI_HTOTAL;
+reg [11:0] rtg_vtotal_p   = RTG_HI_VTOTAL;
+reg [11:0] rtg_hact_p     = 12'd0;
+reg [11:0] rtg_vact_p     = 12'd0;
+reg [11:0] rtg_hs_end_p   = RTG_HI_HTOTAL;
+reg [11:0] rtg_hs_start_p = RTG_HI_HTOTAL;
+reg [11:0] rtg_vfp_p      = RTG_HI_VTOTAL;
+reg [11:0] rtg_vsw_p      = 12'd0;
+always @(posedge clk_vid) begin
+	rtg_htotal_p   <= rtg_htotal_c;
+	rtg_vtotal_p   <= rtg_vtotal_c;
+	rtg_hact_p     <= rtg_hact_c;
+	rtg_vact_p     <= rtg_vact_c;
+	rtg_hs_end_p   <= rtg_htotal_c - rtg_hbp;            // fixed standard back porch
+	rtg_hs_start_p <= rtg_htotal_c - rtg_hbp - rtg_hsw;
+	rtg_vfp_p      <= rtg_vfp_c;
+	rtg_vsw_p      <= rtg_vsw;
+end
 reg [11:0] rtg_htotal   = RTG_HI_HTOTAL;
 reg [11:0] rtg_vtotal   = RTG_HI_VTOTAL;
 reg [11:0] rtg_hact     = 12'd0;
@@ -2251,14 +2420,14 @@ reg [11:0] rtg_hs_end   = RTG_HI_HTOTAL;
 reg [11:0] rtg_vs_start = RTG_HI_VTOTAL;
 reg [11:0] rtg_vs_end   = RTG_HI_VTOTAL;
 always @(posedge clk_vid) begin
-	rtg_htotal   <= rtg_htotal_c;
-	rtg_vtotal   <= rtg_vtotal_c;
-	rtg_hact     <= rtg_hact_c;
-	rtg_vact     <= rtg_vact_c;
-	rtg_hs_end   <= rtg_htotal_c - rtg_hbp;            // fixed standard back porch
-	rtg_hs_start <= rtg_htotal_c - rtg_hbp - rtg_hsw;
-	rtg_vs_start <= rtg_vact_c + rtg_vfp_c;
-	rtg_vs_end   <= rtg_vact_c + rtg_vfp_c + rtg_vsw;
+	rtg_htotal   <= rtg_htotal_p;
+	rtg_vtotal   <= rtg_vtotal_p;
+	rtg_hact     <= rtg_hact_p;
+	rtg_vact     <= rtg_vact_p;
+	rtg_hs_end   <= rtg_hs_end_p;
+	rtg_hs_start <= rtg_hs_start_p;
+	rtg_vs_start <= rtg_vact_p + rtg_vfp_p;
+	rtg_vs_end   <= rtg_vact_p + rtg_vfp_p + rtg_vsw_p;
 end
 
 // pixel clock-enable: clk_vid/16 or clk_vid/4
@@ -2287,8 +2456,13 @@ wire        sc_hs, sc_vs, sc_de, sc_cs;
 
 rtg_ddr_reader #(.LB_AW(9), .MAX_BURST(8'd16)) u_rtg_reader
 (
+`ifdef BIGMIG_GPU
+	.clk              (clk_audio),
+	.rst              (rtgr_rst),
+`else
 	.clk              (clk_100m),
 	.rst              (reset),
+`endif
 	.enable           (rtg_scanout_active),
 	.fb_base          (RTG_BASE),
 	.fb_stride        (RTG_STRIDE),
@@ -2297,6 +2471,17 @@ rtg_ddr_reader #(.LB_AW(9), .MAX_BURST(8'd16)) u_rtg_reader
 	.fb_bpp_l2        (rtg_bpp_l2),
 	.px_frame_tgl     (rtg_frame_tgl),
 	.px_line_tgl      (rtg_line_tgl),
+`ifdef BIGMIG_GPU
+	.avl_address      (rtgr_address),
+	.avl_burstcount   (rtgr_burstcount),
+	.avl_read         (rtgr_read),
+	.avl_waitrequest  (rtgr_waitrequest),
+	.avl_readdata     (rtgr_readdata),
+	.avl_readdatavalid(rtgr_readdatavalid),
+	.avl_writedata    (),
+	.avl_byteenable   (),
+	.avl_write        (),
+`else
 	.avl_address      (ram_address),
 	.avl_burstcount   (ram_burstcount),
 	.avl_read         (ram_read),
@@ -2306,6 +2491,7 @@ rtg_ddr_reader #(.LB_AW(9), .MAX_BURST(8'd16)) u_rtg_reader
 	.avl_writedata    (ram_writedata),
 	.avl_byteenable   (ram_byteenable),
 	.avl_write        (ram_write),
+`endif
 	.lb_we            (rtg_lb_we),
 	.lb_waddr         (rtg_lb_waddr),
 	.lb_wdata         (rtg_lb_wdata)
@@ -2322,7 +2508,11 @@ rtg_scanout #(.LB_AW(9), .HTOTAL0(RTG_HI_HTOTAL), .VTOTAL0(RTG_HI_VTOTAL)) u_rtg
 	.cmode     (rtg_cmode),
 	.fmt_1555  (rtg_1555),
 	.fmt_swap  (rtg_swap),
+`ifdef BIGMIG_GPU
+	.lb_wclk   (clk_audio),
+`else
 	.lb_wclk   (clk_100m),
+`endif
 	.lb_we     (rtg_lb_we),
 	.lb_waddr  (rtg_lb_waddr),
 	.lb_wdata  (rtg_lb_wdata),

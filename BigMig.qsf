@@ -24,7 +24,7 @@ set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
 set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
-set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
+set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS ON
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
@@ -52,13 +52,15 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
 set_global_assignment -name OPTIMIZE_POWER_DURING_SYNTHESIS OFF
 set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
 set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
-set_global_assignment -name SEED 1
+set_global_assignment -name SEED 7
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 set_global_assignment -name VERILOG_MACRO "MISTER_FB_PALETTE=1"
 # Emu68-A9 hybrid: enables the whole seam (h2f master, adapter, axi_seam_slave, bridge).
 # Removing this macro does not give you the classic core -- the soft CPUs are not in the fabric
 # and their sources are not in this project's file list. For the classic core, use Minimig for MiSTer.
 set_global_assignment -name VERILOG_MACRO "HYBRID_EMU=1"
+# no chip-write posting buffer (the seam commits chip writes itself)
+set_global_assignment -name VERILOG_MACRO "BIGMIG_NO_CHIP_WRITE_RETRY=1"
 
 source sys/sys.tcl
 source sys/sys_analog.tcl
@@ -313,3 +315,26 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SDIO_DAT[*]
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SD_SPI*
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to USER_IO[*]
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to VGA_EN
+set_global_assignment -name SDC_FILE f0e_cdc.sdc
+set_global_assignment -name SDC_FILE f0e_l1e.sdc
+set_global_assignment -name SDC_FILE f0e_seam.sdc
+set_global_assignment -name SDC_FILE f0e_ovc.sdc
+
+# GPU: two RasterIX units on ram1 (f2h_sdram1), registers at 0xC2000000 on the h2f bridge; remove BIGMIG_GPU to build without it
+set_global_assignment -name VERILOG_MACRO "BIGMIG_GPU=1"
+set_global_assignment -name VERILOG_MACRO "BIGMIG_GPU_LEAN=1"
+set_global_assignment -name VERILOG_MACRO "G2_QUAD=1"
+set_global_assignment -name VERILOG_MACRO "G3_WALK_MERGE=1"
+set_global_assignment -name VERILOG_MACRO "G3_WALK_MERGE_INTERP=1"
+set_global_assignment -name QIP_FILE rtl/gpu/bigmig/quartus/bm_gpu.qip
+set_global_assignment -name VERILOG_FILE sys/h2f_lite_gpu_demux.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/gpu_pll.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/avl_rd_arb2.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bigmig_f2sdram_terminator.sv
+set_instance_assignment -name DSP_BLOCK_BALANCING "LOGIC ELEMENTS" -to "*TextureFilter:*"
+set_instance_assignment -name DSP_BLOCK_BALANCING "LOGIC ELEMENTS" -to "*ColorInterpolator:fogInterpolator"
+set_global_assignment -name SDC_FILE f1_gpu.sdc
+# one setup engine for both units
+set_global_assignment -name VERILOG_MACRO "BIGMIG_GPU_SHARED_SETUP=1"
+# colour buffers as big-endian RGB565 on request (CTRL.CSWAP)
+set_global_assignment -name VERILOG_MACRO "BIGMIG_GPU_CSWAP=1"

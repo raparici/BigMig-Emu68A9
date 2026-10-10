@@ -419,14 +419,19 @@ assign cachecfg = {cachecfg_pre[2], ~ovl, ~ovl};
 // NTSC/PAL switching is controlled by OSD menu, change requires reset to take effect
 always @(posedge clk) if (clk7_en && reset) ntsc <= chipset_config[1];
 
+// no Gayle: the disks are bigmigHD.device's (BIGMIG_GAYLE builds the IDE path back)
+`ifdef BIGMIG_GAYLE
 assign ide_ena  = ide_config[0];
+`else
+assign ide_ena  = 1'b0;
+`endif
 
 // Wake the CPU-side Gayle in Emu68 mode. Upstream ties Fast IDE to the soft 68020, because on
 // the classic core fastchip's Gayle is only reachable through cpu_wrapper -- and here the OSD CPU
 // type bits are deliberately held at 00 (the seam is the CPU, so every cpucfg[1] consumer sees
 // plain-68000 semantics), which makes ide_fast unreachable.
 //
-// ⛔ Do NOT fix that by raising the OSD CPU type: those bits are held at 00 on purpose, and a
+// Do NOT fix that by raising the OSD CPU type: those bits are held at 00 on purpose, and a
 // runtime CPU-type change is a far larger contract than an IDE speedup. In this core cpucfg[1]
 // has no live consumer, so decoupling turbochip / turbokick / ac_memcard / cache_config is safe.
 //
@@ -830,6 +835,7 @@ gary GARY1
 	.bootrom(bootrom)
 );
 
+`ifdef BIGMIG_GAYLE
 gayle GAYLE1
 (
 	.clk(clk),
@@ -853,6 +859,15 @@ gayle GAYLE1
 
 	.led(hdd_led)
 );
+`else
+// idle Gayle outputs
+assign gayle_data_out = 16'h0000;
+assign gayle_irq      = 1'b0;
+assign gayle_nrdy     = 1'b0;
+assign ide_req        = 6'd0;
+assign ide_readdata   = 16'h0000;
+assign hdd_led        = 1'b0;
+`endif
 
 //instantiate system control
 minimig_syscontrol CONTROL1 

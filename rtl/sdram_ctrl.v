@@ -233,13 +233,21 @@ end
 
 //// sdram state ////
 reg [3:0] sdram_state;
+// sdram_state == 0 / == 2, registered (timing)
+reg       st_is0, st_is2;
 always @ (posedge sysclk) begin
 	reg old_7m;
 
 	sdram_state <= sdram_state + 1'd1;
+	st_is0      <= (sdram_state == 4'd15);
+	st_is2      <= (sdram_state == 4'd1);
 
 	old_7m <= c_7m;
-	if(~old_7m & c_7m) sdram_state <= 0;
+	if(~old_7m & c_7m) begin
+		sdram_state <= 0;
+		st_is0      <= 1'b1;
+		st_is2      <= 1'b0;
+	end
 end
 
 //// sdram control ////
@@ -274,7 +282,7 @@ always @ (posedge sysclk) begin
 		rcnt                  <= 0;
 		sd_dqm                <= 3;
 		sd_ba                 <= 0;
-		if(sdram_state == 0) begin
+		if(st_is0) begin
 			case(initstate)
 				4 : begin // PRECHARGE
 					sd_addr[10]  <= 1; // all banks
@@ -297,10 +305,9 @@ always @ (posedge sysclk) begin
 		end
 	end else begin
 
-		case(sdram_state)
-
+		if(st_is0) begin
 			// RAS
-			0 : begin
+			begin
 				cas_sd_cas      <= 1;
 				cas_sd_we       <= 1;
 				cas_dqm         <= 0;
@@ -346,8 +353,9 @@ always @ (posedge sysclk) begin
 				end
 			end
 
+		end else if(st_is2) begin
 			// CAS
-			2 : begin
+			begin
 				sd_addr         <= {1'b1, casaddr}; // AUTO PRECHARGE
 				sd_cas          <= cas_sd_cas;
 				sd_dqm          <= 0;
@@ -359,7 +367,7 @@ always @ (posedge sysclk) begin
 				end
 				write_ack       <= 0; // indicate to write that it's safe to accept the next write
 			end
-		endcase
+		end
 	end
 end
 

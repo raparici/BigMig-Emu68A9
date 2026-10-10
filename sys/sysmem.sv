@@ -107,7 +107,12 @@ always @(posedge ram1_clk) begin
 	ram1_reset_1 <= ram1_reset_0;
 end
 
+`ifdef BIGMIG_GPU
+// ram1 carries the GPU's write bursts: terminate them with an exact beat count
+bigmig_f2sdram_terminator #(64, 8) f2sdram_safe_terminator_ram1
+`else
 f2sdram_safe_terminator #(64, 8) f2sdram_safe_terminator_ram1
+`endif
 (
 	.clk                      (ram1_clk),
 	.rst_req_sync             (ram1_reset_1),

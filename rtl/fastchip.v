@@ -95,6 +95,7 @@ wire ide_ready = ide_ack & (sel_ide | sel_gayle) & ~(ide_nrdy & rnw);
 wire [15:0] ide_dout;
 wire        ide_nrdy;
 
+`ifdef BIGMIG_GAYLE
 gayle gayle
 (
 	.clk(clk_sys),
@@ -120,6 +121,15 @@ gayle gayle
 	
 	.led(ide_led)
 );
+`else
+// no CPU-side Gayle: ide_ena is 0 here, so it is never selected
+assign ide_dout     = 16'h0000;
+assign ide_irq      = 1'b0;
+assign ide_nrdy     = 1'b0;
+assign ide_req      = 6'd0;
+assign ide_readdata = 16'h0000;
+assign ide_led      = 1'b0;
+`endif
 
 wire        sel_rtg = sel && (addr[23:12] == 'hB80);
 wire [15:0] rtg_dout;

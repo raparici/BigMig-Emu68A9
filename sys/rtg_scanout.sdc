@@ -19,12 +19,6 @@ set_false_path -to [get_registers {*u_rtg_hdmi_osd_sprite|*_a}]
 set_false_path -to [get_registers {*u_rtg_hdmi_osd_sprite|*_a[*]}]
 set_false_path -to [get_registers {*u_rtg_hdmi_osd_sprite|*_m}]
 set_false_path -to [get_registers {*u_rtg_hdmi_osd_sprite|*_m[*]}]
-# quasi-static geometry into the load-enabled snapshot of the position FSM
+# quasi-static geometry into the load-enabled snapshot of the step FSM
 set_multicycle_path -setup -to [get_registers {*u_rtg_hdmi_osd_sprite|p_*}] 2
 set_multicycle_path -hold  -to [get_registers {*u_rtg_hdmi_osd_sprite|p_*}] 1
-set_multicycle_path -setup -to [get_registers {*u_rtg_hdmi_osd_sprite|map_*}] 2
-set_multicycle_path -hold  -to [get_registers {*u_rtg_hdmi_osd_sprite|map_*}] 1
-set_multicycle_path -setup -to [get_registers {*u_rtg_hdmi_osd_sprite|vw_r*}] 2
-set_multicycle_path -hold  -to [get_registers {*u_rtg_hdmi_osd_sprite|vw_r*}] 1
-set_multicycle_path -setup -to [get_registers {*u_rtg_hdmi_osd_sprite|vh_r*}] 2
-set_multicycle_path -hold  -to [get_registers {*u_rtg_hdmi_osd_sprite|vh_r*}] 1

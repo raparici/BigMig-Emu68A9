@@ -1,0 +1,37 @@
+// triangle setup microcode parameters (generated; do not edit)
+
+localparam UC_II = 132;
+localparam UC_WIDTH = 142;
+localparam UC_STAGES = 2;
+localparam UC_NCONST = 5;
+localparam [31:0] UC_CONST0 = 32'h3f800000;
+localparam [31:0] UC_CONST1 = 32'h0da24260;
+localparam [31:0] UC_CONST2 = 32'hc0800000;
+localparam [31:0] UC_CONST3 = 32'h40800000;
+localparam [31:0] UC_CONST4 = 32'h00000000;
+localparam M_OP_LO = 0, M_OP_W = 3;
+localparam M_FN_LO = 3, M_FN_W = 5;
+localparam M_A_LO = 8, M_A_W = 9;
+localparam M_AMODE_LO = 17, M_AMODE_W = 2;
+localparam M_B_LO = 19, M_B_W = 9;
+localparam M_DST_LO = 28, M_DST_W = 8;
+localparam M_OB_LO = 36, M_OB_W = 7;
+localparam M_FIN_LO = 43, M_FIN_W = 6;
+localparam M_FOUT_LO = 49, M_FOUT_W = 5;
+localparam M_IMM_LO = 54, M_IMM_W = 8;
+localparam M_STAGE_LO = 62, M_STAGE_W = 1;
+localparam M_ACC_LO = 63, M_ACC_W = 2;
+localparam M_MACC_LO = 65, M_MACC_W = 2;
+localparam M_LAST_LO = 67, M_LAST_W = 1;
+localparam S_OP_LO = 68, S_OP_W = 4;
+localparam S_FN_LO = 72, S_FN_W = 5;
+localparam S_A_LO = 77, S_A_W = 9;
+localparam S_AMODE_LO = 86, S_AMODE_W = 2;
+localparam S_B_LO = 88, S_B_W = 9;
+localparam S_BMODE_LO = 97, S_BMODE_W = 2;
+localparam S_DST_LO = 99, S_DST_W = 8;
+localparam S_OB_LO = 107, S_OB_W = 7;
+localparam S_FIN_LO = 114, S_FIN_W = 6;
+localparam S_FOUT_LO = 120, S_FOUT_W = 5;
+localparam S_IMM_LO = 125, S_IMM_W = 16;
+localparam S_STAGE_LO = 141, S_STAGE_W = 1;

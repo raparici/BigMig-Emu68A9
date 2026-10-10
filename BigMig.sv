@@ -722,7 +722,11 @@ wire        _ram_we;       // sram write enable
 wire        _ram_oe;       // sram output enable
 
 // posting buffer: a chip write can lose its SDRAM slot to an Agnus DMA cycle, and DTACK is arbitration, not commit
+`ifdef BIGMIG_NO_CHIP_WRITE_RETRY
+localparam CHIP_WRITE_RETRY_EN = 1'b0;
+`else
 localparam CHIP_WRITE_RETRY_EN = 1'b1;
+`endif
 wire        minimig_dbr;      // Agnus dbr, exposed from minimig.v
 wire        minimig_ovl;      // Kickstart overlay, exposed from minimig.v (VIA-B decode)
 wire [23:1] cw_ram_address;
@@ -923,13 +927,23 @@ end
 assign ce_pix = ce_out;
 
 wire [2:0] fx;
+`ifdef BIGMIG_SCANDOUBLER
 wire       scandoubler = (fx || forced_scandoubler) & ~lace;
+`else
+// no scandoubler: native rate on every output, the scaler does the rest (use vga_scaler=1 for VGA monitors)
+wire       scandoubler = 1'b0;
+`endif
 wire [7:0] R,G,B;
 
 video_mixer #(.LINE_LENGTH(2000), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 (
 	.*,
+`ifdef BIGMIG_HQ2X
 	.hq2x(fx==1),
+`else
+	// no HQ2x
+	.hq2x(1'b0),
+`endif
 	.ce_pix(ce_out),
 	.freeze_sync(),
 
@@ -1010,8 +1024,13 @@ end
 // only RTG modes above 480 lines are blanked; the rest reach the analog output
 assign VGA_DISABLE = fb_en_vga & (FB_HEIGHT > 12'd480);
 
+`ifdef BIGMIG_SCANDOUBLER
 wire [2:0] sl = fx ? fx - 1'd1 : 3'd0;
 assign VGA_SL = sl[1:0];
+`else
+// no scanlines here (they also fed the scaler); the scaler's filters and shadow masks do it
+assign VGA_SL = 2'd0;
+`endif
 
 reg  hde;
 wire vde = ~(fvbl | svbl);
@@ -1311,6 +1330,7 @@ wire  [15:0] cdda_dout;
 wire         cdda_req;
 wire         cdda_wr;
 
+`ifdef BIGMIG_CDDA
 cdda #(28375160) cdda
 (
 	.CLK(clk_sys),
@@ -1321,6 +1341,12 @@ cdda #(28375160) cdda
 	.AUDIO_L(cdda_l),
 	.AUDIO_R(cdda_r)
 );
+`else
+// no CD audio in the fabric (nothing on this core plays it)
+assign cdda_l   = 16'h0000;
+assign cdda_r   = 16'h0000;
+assign cdda_req = 1'b0;
+`endif
 
 reg [15:0] out_l, out_r;
 always @(posedge CLK_AUDIO) begin
