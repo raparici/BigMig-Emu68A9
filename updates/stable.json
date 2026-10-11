@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "channel": "stable",
-  "generated": "2026-10-10T17:26:38Z",
+  "generated": "2026-10-10T23:59:59Z",
   "release": {
     "tag": "20261010",
     "notes": "https://github.com/raparici/BigMig-Emu68A9/releases/tag/20261010",
@@ -31,8 +31,8 @@
       "role": "core",
       "file": "BigMig_20261010.rbf",
       "install": "discover:bigmig_rbf",
-      "sha256": "d068c9eb804d7d7c2ac107de8d887eec0293ccd032cb43652d80794196ccde2f",
-      "size": 4280904,
+      "sha256": "d92bf38c16bc4f6a12c0e4ddb3162906cd850392947945a79d64f75648d94261",
+      "size": 4265784,
       "url": "https://github.com/raparici/BigMig-Emu68A9/releases/download/20261010/BigMig_20261010.rbf",
       "version": "261010",
       "supersedes_glob": "BigMig*.rbf",
@@ -202,6 +202,13 @@
       "tags": [
         "20261010"
       ]
+    },
+    "d92bf38c16bc4f6a12c0e4ddb3162906cd850392947945a79d64f75648d94261": {
+      "role": "core",
+      "tags": [
+        "20261010"
+      ],
+      "version": "261010"
     }
   }
 }
